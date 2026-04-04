@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Star, Paperclip, Archive } from "lucide-react";
+import { Star, Paperclip } from "lucide-react";
 import type { Message } from "@/lib/api";
 import { updateMessageFlags } from "@/lib/api";
 
@@ -146,23 +146,6 @@ export default function MessageItem({ message, isSelected, onClick }: Props) {
               fill={message.is_starred ? "#f59e0b" : "none"}
               color={message.is_starred ? "#f59e0b" : "currentColor"}
             />
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-            }}
-            style={{
-              padding: "4px",
-              border: "none",
-              background: "transparent",
-              borderRadius: "4px",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              color: "var(--color-text-secondary)",
-            }}
-          >
-            <Archive size={14} />
           </button>
         </div>
       )}

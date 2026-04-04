@@ -259,38 +259,35 @@ export default function MessageDetail({ messageId, onBack }: Props) {
             {
               icon: Archive,
               label: t("messageActions.archive"),
-              action: async () => {
-                // archive action placeholder
-                onBack();
-              },
+              action: async () => {},
+              disabled: true,
             },
             {
               icon: Trash2,
               label: t("messageActions.delete"),
-              action: async () => {
-                // delete action placeholder
-                onBack();
-              },
+              action: async () => {},
+              disabled: true,
             },
             { icon: LayoutGrid, label: t("messageActions.addToKanban"), action: () => moveToKanban(message.id, "todo") },
-          ] as const).map(({ icon: Icon, label, action, active }: { icon: React.ComponentType<{ size?: number }>; label: string; action: () => void; active?: boolean }, i) => (
+          ] as const).map(({ icon: Icon, label, action, active, disabled }: { icon: React.ComponentType<{ size?: number }>; label: string; action: () => void; active?: boolean; disabled?: boolean }, i) => (
             <button
               key={i}
-              onClick={action}
-              title={label}
+              onClick={disabled ? undefined : action}
+              title={disabled ? label + " (coming soon)" : label}
               style={{
                 background: "none",
                 border: "none",
-                cursor: "pointer",
+                cursor: disabled ? "default" : "pointer",
                 padding: "6px 8px",
                 borderRadius: "4px",
                 color: active ? "var(--color-accent)" : "var(--color-text-secondary)",
                 display: "flex",
                 alignItems: "center",
                 transition: "background-color 0.12s ease, color 0.12s ease",
+                opacity: disabled ? 0.35 : 1,
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "var(--color-bg-hover)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "transparent"; }}
+              onMouseEnter={disabled ? undefined : (e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "var(--color-bg-hover)"; }}
+              onMouseLeave={disabled ? undefined : (e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "transparent"; }}
             >
               <Icon size={16} />
             </button>

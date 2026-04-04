@@ -13,14 +13,18 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub search: Arc<TantivySearch>,
     pub sync_handles: Mutex<HashMap<String, SyncHandle>>,
+    /// Kept alive so the snooze watcher's `stop_rx` remains open.
+    #[allow(dead_code)]
+    pub snooze_stop_tx: watch::Sender<bool>,
 }
 
 impl AppState {
-    pub fn new(store: Store, search: TantivySearch) -> Self {
+    pub fn new(store: Store, search: TantivySearch, snooze_stop_tx: watch::Sender<bool>) -> Self {
         Self {
             store: Arc::new(store),
             search: Arc::new(search),
             sync_handles: Mutex::new(HashMap::new()),
+            snooze_stop_tx,
         }
     }
 }

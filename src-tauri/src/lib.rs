@@ -52,17 +52,17 @@ pub fn run() {
                 .expect("Failed to open search index");
             tracing::info!("Search index initialized successfully");
 
-            app.manage(AppState::new(store, search));
+            let (snooze_stop_tx, snooze_stop_rx) = tokio::sync::watch::channel(false);
+            app.manage(AppState::new(store, search, snooze_stop_tx));
 
             // Start snooze watcher
             let state: tauri::State<AppState> = app.state();
             let store_clone = state.store.clone();
             let app_handle = app.handle().clone();
-            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             tokio::spawn(snooze_watcher::run_snooze_watcher(
                 store_clone,
                 app_handle,
-                stop_rx,
+                snooze_stop_rx,
             ));
 
             Ok(())

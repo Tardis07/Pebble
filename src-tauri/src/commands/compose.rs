@@ -59,13 +59,19 @@ pub async fn send_email(
 
     let sender = SmtpSender::new(smtp_host, smtp_port, smtp_username, smtp_password, smtp_use_tls);
 
-    sender.send(
-        &account.email,
-        &to,
-        &cc,
-        &subject,
-        &body_text,
-        body_html.as_deref(),
-        in_reply_to.as_deref(),
-    )
+    let from_email = account.email.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sender.send(
+            &from_email,
+            &to,
+            &cc,
+            &subject,
+            &body_text,
+            body_html.as_deref(),
+            in_reply_to.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| PebbleError::Internal(format!("Send task failed: {e}")))?;
+    result
 }

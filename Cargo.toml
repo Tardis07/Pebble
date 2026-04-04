@@ -7,6 +7,7 @@ members = [
     "crates/pebble-mail",
     "crates/pebble-search",
     "crates/pebble-rules",
+    "crates/pebble-translate",
 ]
 resolver = "2"
 
@@ -26,3 +27,4 @@ mail-parser = "0.9"
 tantivy = "0.22"
 ammonia = "4"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

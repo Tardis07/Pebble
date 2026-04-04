@@ -5,6 +5,7 @@ members = [
     "crates/pebble-store",
     "crates/pebble-privacy",
     "crates/pebble-mail",
+    "crates/pebble-search",
 ]
 resolver = "2"
 
@@ -21,3 +22,4 @@ tauri-build = { version = "2", features = [] }
 async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
 async-native-tls = { version = "0.5", default-features = false, features = ["runtime-tokio"] }
 mail-parser = "0.9"
+tantivy = "0.22"

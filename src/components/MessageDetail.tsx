@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Clock } from "lucide-react";
-import { getMessage, getRenderedHtml, updateMessageFlags } from "@/lib/api";
-import type { Message, RenderedHtml, PrivacyMode } from "@/lib/api";
+import { ArrowLeft, Clock, Languages, Reply, Forward, Star, Archive, Trash2, LayoutGrid } from "lucide-react";
+import { getMessage, getRenderedHtml, updateMessageFlags, moveToKanban, translateText } from "@/lib/api";
+import { useUIStore } from "@/stores/ui.store";
+import { useTranslation } from "react-i18next";
+import type { Message, RenderedHtml, PrivacyMode, TranslateResult } from "@/lib/api";
+import { MessageDetailSkeleton } from "./Skeleton";
 import PrivacyBanner from "./PrivacyBanner";
+import AttachmentList from "./AttachmentList";
 import SnoozePopover from "../features/inbox/SnoozePopover";
+import TranslatePopover from "../features/translate/TranslatePopover";
+import BilingualView from "../features/translate/BilingualView";
 
 interface Props {
   messageId: string;
@@ -21,11 +27,17 @@ function formatFullDate(timestamp: number): string {
 }
 
 export default function MessageDetail({ messageId, onBack }: Props) {
+  const { t } = useTranslation();
+  const openCompose = useUIStore((s) => s.openCompose);
   const [message, setMessage] = useState<Message | null>(null);
   const [rendered, setRendered] = useState<RenderedHtml | null>(null);
   const [loading, setLoading] = useState(true);
   const [privacyMode, setPrivacyMode] = useState<PrivacyMode>("Strict");
   const [showSnooze, setShowSnooze] = useState(false);
+  const [showTranslate, setShowTranslate] = useState<{ text: string; position: { x: number; y: number } } | null>(null);
+  const [bilingualMode, setBilingualMode] = useState(false);
+  const [bilingualResult, setBilingualResult] = useState<TranslateResult | null>(null);
+  const [bilingualLoading, setBilingualLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +79,15 @@ export default function MessageDetail({ messageId, onBack }: Props) {
     return () => document.removeEventListener("click", handleClick);
   }, [showSnooze]);
 
+  useEffect(() => {
+    if (!showTranslate) return;
+    function handleClick() {
+      setShowTranslate(null);
+    }
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, [showTranslate]);
+
   function handleLoadImages() {
     setPrivacyMode("LoadOnce");
   }
@@ -77,21 +98,34 @@ export default function MessageDetail({ messageId, onBack }: Props) {
     }
   }
 
+  async function handleBilingualToggle() {
+    if (bilingualMode) {
+      setBilingualMode(false);
+      return;
+    }
+    if (!message) return;
+    setBilingualMode(true);
+    setBilingualLoading(true);
+    try {
+      const result = await translateText(message.body_text || "", "auto", "zh");
+      setBilingualResult(result);
+    } catch (err) {
+      console.error("Translation failed:", err);
+    } finally {
+      setBilingualLoading(false);
+    }
+  }
+
+  function handleMouseUp(e: React.MouseEvent) {
+    const selection = window.getSelection();
+    const selectedText = selection?.toString().trim() || "";
+    if (selectedText.length > 5) {
+      setShowTranslate({ text: selectedText, position: { x: e.clientX, y: e.clientY } });
+    }
+  }
+
   if (loading) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-          color: "var(--color-text-secondary)",
-          fontSize: "14px",
-        }}
-      >
-        Loading...
-      </div>
-    );
+    return <MessageDetailSkeleton />;
   }
 
   if (!message) {
@@ -185,6 +219,77 @@ export default function MessageDetail({ messageId, onBack }: Props) {
               />
             )}
           </div>
+          <button
+            onClick={handleBilingualToggle}
+            style={{
+              background: bilingualMode ? "var(--color-bg-hover)" : "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "4px",
+              borderRadius: "4px",
+              color: bilingualMode ? "var(--color-accent)" : "var(--color-text-secondary)",
+              display: "flex",
+              alignItems: "center",
+              flexShrink: 0,
+            }}
+            title="Toggle bilingual view"
+          >
+            <Languages size={16} />
+          </button>
+        </div>
+        {/* Action Toolbar */}
+        <div style={{ display: "flex", gap: "2px", padding: "4px 16px 4px 48px" }}>
+          {([
+            { icon: Reply, label: t("messageActions.reply"), action: () => openCompose("reply", message) },
+            { icon: Forward, label: t("messageActions.forward"), action: () => openCompose("forward", message) },
+            {
+              icon: Star,
+              label: message.is_starred ? t("messageActions.unstar") : t("messageActions.star"),
+              action: async () => {
+                await updateMessageFlags(message.id, undefined, !message.is_starred);
+                setMessage({ ...message, is_starred: !message.is_starred });
+              },
+              active: message.is_starred,
+            },
+            {
+              icon: Archive,
+              label: t("messageActions.archive"),
+              action: async () => {
+                // archive action placeholder
+                onBack();
+              },
+            },
+            {
+              icon: Trash2,
+              label: t("messageActions.delete"),
+              action: async () => {
+                // delete action placeholder
+                onBack();
+              },
+            },
+            { icon: LayoutGrid, label: t("messageActions.addToKanban"), action: () => moveToKanban(message.id, "todo") },
+          ] as const).map(({ icon: Icon, label, action, active }: { icon: React.ComponentType<{ size?: number }>; label: string; action: () => void; active?: boolean }, i) => (
+            <button
+              key={i}
+              onClick={action}
+              title={label}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "6px 8px",
+                borderRadius: "4px",
+                color: active ? "var(--color-accent)" : "var(--color-text-secondary)",
+                display: "flex",
+                alignItems: "center",
+                transition: "background-color 0.12s ease, color 0.12s ease",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "var(--color-bg-hover)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "transparent"; }}
+            >
+              <Icon size={16} />
+            </button>
+          ))}
         </div>
         <div style={{ paddingLeft: "32px" }}>
           <div style={{ fontSize: "13px", color: "var(--color-text-primary)", marginBottom: "2px" }}>
@@ -213,8 +318,16 @@ export default function MessageDetail({ messageId, onBack }: Props) {
       )}
 
       {/* Body */}
-      <div style={{ flex: 1, overflow: "auto", padding: "16px" }}>
-        {rendered && rendered.html ? (
+      <div style={{ flex: 1, overflow: "auto", padding: "16px" }} onMouseUp={handleMouseUp}>
+        {bilingualMode ? (
+          bilingualLoading ? (
+            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>Translating...</div>
+          ) : bilingualResult ? (
+            <BilingualView segments={bilingualResult.segments} />
+          ) : (
+            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>Translation failed</div>
+          )
+        ) : rendered && rendered.html ? (
           <div
             dangerouslySetInnerHTML={{ __html: rendered.html }}
             style={{ fontSize: "14px", color: "var(--color-text-primary)" }}
@@ -234,6 +347,17 @@ export default function MessageDetail({ messageId, onBack }: Props) {
           </pre>
         )}
       </div>
+
+      {/* Attachments */}
+      {message.has_attachments && <AttachmentList messageId={message.id} />}
+
+      {showTranslate && (
+        <TranslatePopover
+          text={showTranslate.text}
+          position={showTranslate.position}
+          onClose={() => setShowTranslate(null)}
+        />
+      )}
     </div>
   );
 }

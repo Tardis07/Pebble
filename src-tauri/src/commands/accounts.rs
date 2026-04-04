@@ -43,16 +43,27 @@ pub async fn add_account(
 
     state.store.insert_account(&account)?;
 
-    // Persist IMAP config as sync_state JSON
+    // Persist IMAP + SMTP config as sync_state JSON
     let imap_config = pebble_mail::ImapConfig {
         host: request.imap_host,
         port: request.imap_port,
+        username: request.username.clone(),
+        password: request.password.clone(),
+        use_tls: request.use_tls,
+    };
+    let smtp_config = pebble_mail::SmtpConfig {
+        host: request.smtp_host,
+        port: request.smtp_port,
         username: request.username,
         password: request.password,
         use_tls: request.use_tls,
     };
-    let sync_state_json = serde_json::to_string(&imap_config)
-        .map_err(|e| PebbleError::Internal(format!("Failed to serialize IMAP config: {e}")))?;
+    let sync_state = serde_json::json!({
+        "imap": imap_config,
+        "smtp": smtp_config,
+    });
+    let sync_state_json = serde_json::to_string(&sync_state)
+        .map_err(|e| PebbleError::Internal(format!("Failed to serialize sync config: {e}")))?;
     state
         .store
         .update_account_sync_state(&account.id, &sync_state_json)?;

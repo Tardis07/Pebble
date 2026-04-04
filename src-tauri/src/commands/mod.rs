@@ -1,6 +1,11 @@
 pub mod accounts;
+pub mod compose;
 pub mod folders;
 pub mod health;
+pub mod kanban;
 pub mod messages;
+pub mod rules;
 pub mod search;
+pub mod snooze;
 pub mod sync_cmd;
+pub mod trusted_senders;

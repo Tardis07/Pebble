@@ -1,5 +1,6 @@
 mod commands;
 mod events;
+mod snooze_watcher;
 mod state;
 
 use state::AppState;
@@ -52,6 +53,18 @@ pub fn run() {
             tracing::info!("Search index initialized successfully");
 
             app.manage(AppState::new(store, search));
+
+            // Start snooze watcher
+            let state: tauri::State<AppState> = app.state();
+            let store_clone = state.store.clone();
+            let app_handle = app.handle().clone();
+            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            tokio::spawn(snooze_watcher::run_snooze_watcher(
+                store_clone,
+                app_handle,
+                stop_rx,
+            ));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -67,6 +80,18 @@ pub fn run() {
             commands::search::search_messages,
             commands::sync_cmd::start_sync,
             commands::sync_cmd::stop_sync,
+            commands::kanban::move_to_kanban,
+            commands::kanban::list_kanban_cards,
+            commands::kanban::remove_from_kanban,
+            commands::snooze::snooze_message,
+            commands::snooze::unsnooze_message,
+            commands::snooze::list_snoozed,
+            commands::rules::create_rule,
+            commands::rules::list_rules,
+            commands::rules::update_rule,
+            commands::rules::delete_rule,
+            commands::compose::send_email,
+            commands::trusted_senders::trust_sender,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

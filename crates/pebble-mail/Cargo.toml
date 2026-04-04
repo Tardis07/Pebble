@@ -15,3 +15,4 @@ async-imap = { workspace = true }
 async-native-tls = { workspace = true }
 mail-parser = { workspace = true }
 futures = "0.3"
+lettre = { workspace = true }

@@ -27,8 +27,18 @@ pub async fn start_sync(
             PebbleError::Internal(format!("No IMAP config found for account {account_id}"))
         })?;
 
-    let imap_config: ImapConfig = serde_json::from_str(&sync_state_json)
-        .map_err(|e| PebbleError::Internal(format!("Failed to deserialize IMAP config: {e}")))?;
+    let imap_config: ImapConfig = {
+        // Try new format with "imap" key first, fall back to legacy flat format
+        let value: serde_json::Value = serde_json::from_str(&sync_state_json)
+            .map_err(|e| PebbleError::Internal(format!("Failed to parse sync state: {e}")))?;
+        if let Some(imap_value) = value.get("imap") {
+            serde_json::from_value(imap_value.clone())
+                .map_err(|e| PebbleError::Internal(format!("Failed to deserialize IMAP config: {e}")))?
+        } else {
+            serde_json::from_value(value)
+                .map_err(|e| PebbleError::Internal(format!("Failed to deserialize IMAP config: {e}")))?
+        }
+    };
 
     let provider = Arc::new(ImapProvider::new(imap_config));
     let store = Arc::clone(&state.store);

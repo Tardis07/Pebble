@@ -101,6 +101,8 @@ export const useMailStore = create<MailState>((set, get) => ({
     }
   },
 
+  setMessages: (messages) => set({ messages }),
+
   // ─── Convenience cache ────────────────────────────────────────────────────
   accounts: [],
   folders: [],

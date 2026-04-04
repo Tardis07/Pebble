@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Clock, Languages, Reply, Forward, Star, Archive, Trash2, LayoutGrid } from "lucide-react";
-import { getMessage, getRenderedHtml, updateMessageFlags, moveToKanban, translateText } from "@/lib/api";
+import { getMessage, getRenderedHtml, updateMessageFlags, moveToKanban, translateText, trustSender } from "@/lib/api";
 import { useUIStore } from "@/stores/ui.store";
 import { useTranslation } from "react-i18next";
 import type { Message, RenderedHtml, PrivacyMode, TranslateResult } from "@/lib/api";
@@ -92,9 +92,14 @@ export default function MessageDetail({ messageId, onBack }: Props) {
     setPrivacyMode("LoadOnce");
   }
 
-  function handleTrustSender() {
+  async function handleTrustSender() {
     if (message) {
       setPrivacyMode({ TrustSender: message.from_address });
+      try {
+        await trustSender(message.account_id, message.from_address, "all");
+      } catch (err) {
+        console.error("Failed to persist trusted sender:", err);
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Search, X } from "lucide-react";
+import { Search, SlidersHorizontal, X } from "lucide-react";
+import { useUIStore } from "@/stores/ui.store";
 
 interface Props {
   onSearch: (query: string) => void;
@@ -8,11 +9,14 @@ interface Props {
 
 export default function SearchBar({ onSearch, onClear }: Props) {
   const [value, setValue] = useState("");
+  const setActiveView = useUIStore((s) => s.setActiveView);
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     if (value.trim()) {
       onSearch(value.trim());
+      useUIStore.getState().setSearchQuery(value.trim());
+      useUIStore.getState().setActiveView("search");
     }
   }
 
@@ -65,6 +69,22 @@ export default function SearchBar({ onSearch, onClear }: Props) {
           <X size={14} />
         </button>
       )}
+      <button
+        type="button"
+        onClick={() => setActiveView("search")}
+        title="Advanced search"
+        style={{
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: "2px",
+          color: "var(--color-text-secondary)",
+          display: "flex",
+          alignItems: "center",
+        }}
+      >
+        <SlidersHorizontal size={14} />
+      </button>
     </form>
   );
 }

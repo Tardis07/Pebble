@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Clock } from "lucide-react";
 import { getMessage, getRenderedHtml, updateMessageFlags } from "@/lib/api";
 import type { Message, RenderedHtml, PrivacyMode } from "@/lib/api";
 import PrivacyBanner from "./PrivacyBanner";
+import SnoozePopover from "../features/inbox/SnoozePopover";
 
 interface Props {
   messageId: string;
@@ -24,6 +25,7 @@ export default function MessageDetail({ messageId, onBack }: Props) {
   const [rendered, setRendered] = useState<RenderedHtml | null>(null);
   const [loading, setLoading] = useState(true);
   const [privacyMode, setPrivacyMode] = useState<PrivacyMode>("Strict");
+  const [showSnooze, setShowSnooze] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +57,15 @@ export default function MessageDetail({ messageId, onBack }: Props) {
       cancelled = true;
     };
   }, [messageId, privacyMode]);
+
+  useEffect(() => {
+    if (!showSnooze) return;
+    function handleClick() {
+      setShowSnooze(false);
+    }
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, [showSnooze]);
 
   function handleLoadImages() {
     setPrivacyMode("LoadOnce");
@@ -146,6 +157,34 @@ export default function MessageDetail({ messageId, onBack }: Props) {
           >
             {message.subject || "(no subject)"}
           </h2>
+          <div style={{ position: "relative", marginLeft: "auto", flexShrink: 0 }}>
+            <button
+              onClick={() => setShowSnooze(!showSnooze)}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "4px",
+                borderRadius: "4px",
+                color: "var(--color-text-secondary)",
+                display: "flex",
+                alignItems: "center",
+              }}
+              title="Snooze message"
+            >
+              <Clock size={16} />
+            </button>
+            {showSnooze && (
+              <SnoozePopover
+                messageId={messageId}
+                onClose={() => setShowSnooze(false)}
+                onSnoozed={() => {
+                  setShowSnooze(false);
+                  onBack();
+                }}
+              />
+            )}
+          </div>
         </div>
         <div style={{ paddingLeft: "32px" }}>
           <div style={{ fontSize: "13px", color: "var(--color-text-primary)", marginBottom: "2px" }}>

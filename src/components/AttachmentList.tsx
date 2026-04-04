@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { File, FileText, Image, FileArchive, Film, Music, Download, Loader } from "lucide-react";
+import { File, FileText, Image, FileArchive, Film, Music, Download, Loader, Check } from "lucide-react";
 import { listAttachments, getAttachmentPath, downloadAttachment } from "@/lib/api";
 import type { Attachment } from "@/lib/api";
 
@@ -28,6 +28,7 @@ export default function AttachmentList({ messageId }: Props) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadedPaths, setDownloadedPaths] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +58,7 @@ export default function AttachmentList({ messageId }: Props) {
       await downloadAttachment(attachment.id, attachment.filename);
       const path = await getAttachmentPath(attachment.id);
       if (path) {
-        console.log("Downloaded to:", path);
+        setDownloadedPaths((prev) => ({ ...prev, [attachment.id]: path }));
       }
     } catch (err) {
       console.error("Failed to download attachment:", err);
@@ -131,7 +132,7 @@ export default function AttachmentList({ messageId }: Props) {
               <button
                 onClick={() => handleDownload(attachment)}
                 disabled={isDownloading}
-                title={isDownloading ? t("attachments.downloading") : t("attachments.download")}
+                title={isDownloading ? t("attachments.downloading") : downloadedPaths[attachment.id] ? downloadedPaths[attachment.id] : t("attachments.download")}
                 style={{
                   background: "none",
                   border: "none",
@@ -145,7 +146,13 @@ export default function AttachmentList({ messageId }: Props) {
                   opacity: isDownloading ? 0.5 : 1,
                 }}
               >
-                {isDownloading ? <Loader size={14} /> : <Download size={14} />}
+                {isDownloading ? (
+                  <Loader size={14} className="spinner" />
+                ) : downloadedPaths[attachment.id] ? (
+                  <Check size={14} style={{ color: "var(--color-accent)" }} />
+                ) : (
+                  <Download size={14} />
+                )}
               </button>
             </div>
           );

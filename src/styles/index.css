@@ -11,6 +11,25 @@
   --color-text-primary: #1a1a1a;
   --color-text-secondary: #6b6b6b;
   --color-accent: #d4714e;
+  --color-bg: #ffffff;
+  --color-bg-hover: rgba(0,0,0,0.05);
+  --color-bg-secondary: rgba(0,0,0,0.06);
+}
+
+[data-theme="dark"] {
+  --color-sidebar-bg: #1e1e1e;
+  --color-sidebar-hover: #2a2a2a;
+  --color-sidebar-active: #333333;
+  --color-titlebar-bg: #1e1e1e;
+  --color-main-bg: #141414;
+  --color-statusbar-bg: #1e1e1e;
+  --color-border: #2e2e2e;
+  --color-text-primary: #e0e0e0;
+  --color-text-secondary: #888888;
+  --color-accent: #d4714e;
+  --color-bg: #1a1a1a;
+  --color-bg-hover: rgba(255,255,255,0.06);
+  --color-bg-secondary: rgba(255,255,255,0.08);
 }
 
 html, body, #root {

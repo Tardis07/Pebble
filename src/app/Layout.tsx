@@ -24,7 +24,7 @@ export default function Layout() {
           {activeView === "settings" && (
             <div className="flex items-center justify-center h-full">
               <p style={{ color: "var(--color-text-secondary)" }}>
-                Settings — coming in Phase 4
+                Settings - coming soon
               </p>
             </div>
           )}

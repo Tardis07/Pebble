@@ -98,4 +98,28 @@ impl Store {
             Ok(())
         })
     }
+
+    pub fn update_account_sync_state(&self, account_id: &str, sync_state: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE accounts SET sync_state = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![sync_state, pebble_core::now_timestamp(), account_id],
+            )
+            .map_err(|e| PebbleError::Storage(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    pub fn get_account_sync_state(&self, account_id: &str) -> Result<Option<String>> {
+        self.with_conn(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT sync_state FROM accounts WHERE id = ?1",
+                    rusqlite::params![account_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(|e| PebbleError::Storage(e.to_string()))?;
+            Ok(result)
+        })
+    }
 }

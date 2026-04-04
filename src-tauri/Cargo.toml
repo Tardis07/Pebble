@@ -17,6 +17,8 @@ tokio = { workspace = true }
 pebble-core = { path = "../crates/pebble-core" }
 pebble-store = { path = "../crates/pebble-store" }
 pebble-privacy = { path = "../crates/pebble-privacy" }
+pebble-mail = { path = "../crates/pebble-mail" }
+pebble-search = { path = "../crates/pebble-search" }
 
 [build-dependencies]
 tauri-build = { workspace = true }

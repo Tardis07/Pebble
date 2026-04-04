@@ -111,6 +111,7 @@ pub enum SearchQuery {
     Structured(StructuredQuery),
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchHit {
     pub message_id: String,
     pub score: f32,

@@ -1,1 +1,6 @@
-// Stub — full implementation in Task 2
+pub mod error;
+pub mod traits;
+pub mod types;
+
+pub use error::{PebbleError, Result};
+pub use types::*;

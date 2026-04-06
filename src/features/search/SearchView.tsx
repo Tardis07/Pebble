@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Search, SlidersHorizontal, Loader } from "lucide-react";
 import type { AdvancedSearchQuery, SearchHit, Message } from "@/lib/api";
-import { advancedSearch, searchMessages, getMessage } from "@/lib/api";
+import { advancedSearch, searchMessages, getMessagesBatch } from "@/lib/api";
 import { useUIStore } from "@/stores/ui.store";
 import SearchFilters from "./SearchFilters";
 import SearchResultItem from "./SearchResultItem";
@@ -32,7 +32,6 @@ export default function SearchView() {
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
-  const [autoSearchDone, setAutoSearchDone] = useState(false);
 
   const doSearch = useCallback(async () => {
     const trimmed = query.trim();
@@ -60,22 +59,22 @@ export default function SearchView() {
     }
   }, [query, filters]);
 
-  // Pick up query from store when navigating from inbox search bar
+  // Pick up query from store on every mount (works across navigations)
   useEffect(() => {
     const storeQuery = useUIStore.getState().searchQuery;
     if (storeQuery) {
       setQuery(storeQuery);
-      useUIStore.getState().setSearchQuery(""); // clear from store
+      useUIStore.getState().setSearchQuery("");
+      // Search immediately with the store query
+      setLoading(true);
+      setHasSearched(true);
+      searchMessages(storeQuery).then((hits) => {
+        setResults(hits);
+      }).finally(() => {
+        setLoading(false);
+      });
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-search when query is populated from store
-  useEffect(() => {
-    if (query && !autoSearchDone && !hasSearched) {
-      setAutoSearchDone(true);
-      doSearch();
-    }
-  }, [query, autoSearchDone, hasSearched, doSearch]);
 
   // Fetch message details for results
   useEffect(() => {
@@ -86,20 +85,18 @@ export default function SearchView() {
     if (idsToFetch.length === 0) return;
 
     let cancelled = false;
-    (async () => {
+    getMessagesBatch(idsToFetch).then((msgs) => {
+      if (cancelled) return;
       const fetched: Record<string, Message | null> = {};
+      for (const msg of msgs) {
+        fetched[msg.id] = msg;
+      }
+      // Mark any IDs not returned as null (message deleted/missing)
       for (const id of idsToFetch) {
-        if (cancelled) return;
-        try {
-          fetched[id] = await getMessage(id);
-        } catch {
-          fetched[id] = null;
-        }
+        if (!(id in fetched)) fetched[id] = null;
       }
-      if (!cancelled) {
-        setMessages((prev) => ({ ...prev, ...fetched }));
-      }
-    })();
+      setMessages((prev) => ({ ...prev, ...fetched }));
+    }).catch(() => {});
     return () => { cancelled = true; };
   }, [results]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -132,6 +129,7 @@ export default function SearchView() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("inbox.searchPlaceholder")}
+          aria-label={t("search.title", "Search")}
           autoFocus
           style={{
             flex: 1,
@@ -146,6 +144,7 @@ export default function SearchView() {
           type="button"
           onClick={() => setShowFilters(!showFilters)}
           title={t("search.filters")}
+          aria-label={t("search.filters")}
           style={{
             background: "none",
             border: "none",

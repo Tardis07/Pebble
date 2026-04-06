@@ -1,0 +1,105 @@
+import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
+
+interface Props {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+export default function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  cancelLabel,
+  destructive,
+  onConfirm,
+  onCancel,
+}: Props) {
+  const { t } = useTranslation();
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    confirmRef.current?.focus();
+
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        backgroundColor: "rgba(0,0,0,0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1100,
+      }}
+    >
+      <div
+        style={{
+          width: "380px",
+          backgroundColor: "var(--color-bg)",
+          borderRadius: "10px",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+          padding: "24px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "16px",
+        }}
+      >
+        <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+          {title}
+        </h3>
+        <p style={{ margin: 0, fontSize: "13px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+          {message}
+        </p>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: "7px 16px",
+              borderRadius: "6px",
+              border: "1px solid var(--color-border)",
+              backgroundColor: "transparent",
+              color: "var(--color-text-primary)",
+              fontSize: "13px",
+              cursor: "pointer",
+            }}
+          >
+            {cancelLabel || t("common.cancel", "Cancel")}
+          </button>
+          <button
+            ref={confirmRef}
+            onClick={onConfirm}
+            style={{
+              padding: "7px 16px",
+              borderRadius: "6px",
+              border: "none",
+              backgroundColor: destructive ? "#ef4444" : "var(--color-accent)",
+              color: "#fff",
+              fontSize: "13px",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {confirmLabel || t("common.confirm", "Confirm")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

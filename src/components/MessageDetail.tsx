@@ -1,19 +1,47 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Clock, Languages, Reply, Forward, Star, Archive, Trash2, LayoutGrid } from "lucide-react";
-import { getMessage, getRenderedHtml, updateMessageFlags, moveToKanban, translateText, trustSender } from "@/lib/api";
+import { ArrowLeft, Clock, Languages, Reply, ReplyAll, Forward, Star, Archive, Trash2, LayoutGrid, RotateCcw } from "lucide-react";
+import { getMessageWithHtml, getRenderedHtml, translateText, trustSender, archiveMessage, deleteMessage, restoreMessage } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 import { useUIStore } from "@/stores/ui.store";
+import { useKanbanStore } from "@/stores/kanban.store";
+import { useToastStore } from "@/stores/toast.store";
 import { useTranslation } from "react-i18next";
-import type { Message, RenderedHtml, PrivacyMode, TranslateResult } from "@/lib/api";
+import { useUpdateFlagsMutation } from "@/hooks/mutations/useUpdateFlagsMutation";
+import DOMPurify from "dompurify";
+import type { Message, MessageSummary, RenderedHtml, PrivacyMode, TranslateResult } from "@/lib/api";
 import { MessageDetailSkeleton } from "./Skeleton";
 import PrivacyBanner from "./PrivacyBanner";
 import AttachmentList from "./AttachmentList";
 import SnoozePopover from "../features/inbox/SnoozePopover";
+import { ShadowDomEmail } from "./ShadowDomEmail";
+
+/** Sanitize HTML to prevent XSS while preserving email formatting */
+function sanitizeHtml(html: string): string {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: [
+      "a", "abbr", "address", "article", "b", "bdi", "bdo", "blockquote",
+      "br", "caption", "cite", "code", "col", "colgroup", "dd", "del",
+      "details", "dfn", "div", "dl", "dt", "em", "figcaption", "figure",
+      "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "i",
+      "img", "ins", "kbd", "li", "main", "mark", "nav", "ol", "p", "pre",
+      "q", "rp", "rt", "ruby", "s", "samp", "section", "small", "span",
+      "strong", "sub", "summary", "sup", "table", "tbody", "td", "tfoot",
+      "th", "thead", "time", "tr", "u", "ul", "var", "wbr",
+    ],
+    ALLOWED_ATTR: [
+      "href", "src", "alt", "title", "width", "height", "style", "class",
+      "align", "valign", "bgcolor", "color", "border", "cellpadding",
+      "cellspacing", "colspan", "rowspan", "dir", "lang",
+    ],
+    ALLOW_DATA_ATTR: false,
+  });
+}
 import TranslatePopover from "../features/translate/TranslatePopover";
-import BilingualView from "../features/translate/BilingualView";
 
 interface Props {
   messageId: string;
   onBack: () => void;
+  folderRole?: string | null;
 }
 
 function formatFullDate(timestamp: number): string {
@@ -26,38 +54,49 @@ function formatFullDate(timestamp: number): string {
   });
 }
 
-export default function MessageDetail({ messageId, onBack }: Props) {
+export default function MessageDetail({ messageId, onBack, folderRole }: Props) {
   const { t } = useTranslation();
   const openCompose = useUIStore((s) => s.openCompose);
+  const queryClient = useQueryClient();
+  const flagsMutation = useUpdateFlagsMutation();
   const [message, setMessage] = useState<Message | null>(null);
   const [rendered, setRendered] = useState<RenderedHtml | null>(null);
   const [loading, setLoading] = useState(true);
-  const [privacyMode, setPrivacyMode] = useState<PrivacyMode>("Strict");
+  const [privacyMode, setPrivacyMode] = useState<PrivacyMode>(() => {
+    const saved = localStorage.getItem("pebble-privacy-mode");
+    if (saved === "off") return "Off";
+    if (saved === "strict") return "Strict";
+    // Default to relaxed (LoadOnce)
+    return "LoadOnce";
+  });
   const [showSnooze, setShowSnooze] = useState(false);
   const [showTranslate, setShowTranslate] = useState<{ text: string; position: { x: number; y: number } } | null>(null);
   const [bilingualMode, setBilingualMode] = useState(false);
   const [bilingualResult, setBilingualResult] = useState<TranslateResult | null>(null);
   const [bilingualLoading, setBilingualLoading] = useState(false);
+  const [showKanbanPicker, setShowKanbanPicker] = useState(false);
+  const inKanban = useKanbanStore((s) => s.cardIdSet.has(messageId));
 
+  // Load message when messageId changes
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setMessage(null);
     setRendered(null);
+    setBilingualMode(false);
+    setBilingualResult(null);
 
     async function load() {
       try {
-        const msg = await getMessage(messageId);
-        if (cancelled || !msg) return;
+        // Single IPC call: get message + rendered HTML together
+        const result = await getMessageWithHtml(messageId, privacyMode);
+        if (cancelled || !result) return;
+        const [msg, html] = result;
         setMessage(msg);
+        setRendered(html);
 
         if (!msg.is_read) {
-          updateMessageFlags(messageId, true, undefined).catch(() => {});
-        }
-
-        const html = await getRenderedHtml(messageId, privacyMode);
-        if (!cancelled) {
-          setRendered(html);
+          flagsMutation.mutate({ messageId, isRead: true });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -65,10 +104,22 @@ export default function MessageDetail({ messageId, onBack }: Props) {
     }
 
     load();
-    return () => {
-      cancelled = true;
-    };
-  }, [messageId, privacyMode]);
+    return () => { cancelled = true; };
+  }, [messageId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-render HTML when privacy mode changes (without reloading message)
+  useEffect(() => {
+    // Skip initial render (handled by message loading effect above)
+    if (!message) return;
+    let cancelled = false;
+    setRendered(null);
+
+    getRenderedHtml(messageId, privacyMode).then((html) => {
+      if (!cancelled) setRendered(html);
+    });
+
+    return () => { cancelled = true; };
+  }, [privacyMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!showSnooze) return;
@@ -88,15 +139,49 @@ export default function MessageDetail({ messageId, onBack }: Props) {
     return () => document.removeEventListener("click", handleClick);
   }, [showTranslate]);
 
+  useEffect(() => {
+    if (!showKanbanPicker) return;
+    function handleClick() { setShowKanbanPicker(false); }
+    // Delay to avoid catching the same click that opened the picker
+    const timer = setTimeout(() => {
+      document.addEventListener("click", handleClick);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("click", handleClick);
+    };
+  }, [showKanbanPicker]);
+
+  async function handleAddToKanban(column: "todo" | "waiting" | "done") {
+    if (!message) return;
+    setShowKanbanPicker(false);
+    try {
+      await useKanbanStore.getState().addCard(message.id, column);
+      useToastStore.getState().addToast({
+        message: t("messageActions.kanbanSuccess", "Added to kanban board"),
+        type: "success",
+      });
+    } catch {
+      useToastStore.getState().addToast({
+        message: t("messageActions.kanbanFailed", "Failed to add to kanban"),
+        type: "error",
+      });
+    }
+  }
+
   function handleLoadImages() {
     setPrivacyMode("LoadOnce");
   }
 
-  async function handleTrustSender() {
+  async function handleTrustSender(trustType: "images" | "all") {
     if (message) {
-      setPrivacyMode({ TrustSender: message.from_address });
+      if (trustType === "all") {
+        setPrivacyMode({ TrustSender: message.from_address });
+      } else {
+        setPrivacyMode("LoadOnce");
+      }
       try {
-        await trustSender(message.account_id, message.from_address, "all");
+        await trustSender(message.account_id, message.from_address, trustType);
       } catch (err) {
         console.error("Failed to persist trusted sender:", err);
       }
@@ -112,8 +197,45 @@ export default function MessageDetail({ messageId, onBack }: Props) {
     setBilingualMode(true);
     setBilingualLoading(true);
     try {
-      const result = await translateText(message.body_text || "", "auto", "zh");
-      setBilingualResult(result);
+      const uiLang = localStorage.getItem("pebble-language") || "zh";
+      const hasHtml = !!(rendered && rendered.html);
+
+      if (hasHtml) {
+        // HTML email: translate while preserving layout
+        const doc = new DOMParser().parseFromString(sanitizeHtml(rendered!.html), "text/html");
+        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+        const textNodes: Text[] = [];
+        let n: Text | null;
+        while ((n = walker.nextNode() as Text | null)) {
+          if (n.textContent?.trim()) textNodes.push(n);
+        }
+
+        if (textNodes.length > 0) {
+          // Use numbered lines so the translation API preserves the mapping
+          const numbered = textNodes.map((nd, i) => `[${i}] ${nd.textContent!.trim()}`).join("\n");
+          const result = await translateText(numbered, "auto", uiLang);
+          // Parse numbered lines back from translated text
+          const lineMap = new Map<number, string>();
+          for (const line of result.translated.split("\n")) {
+            const m = line.match(/^\[(\d+)\]\s*(.*)/);
+            if (m) lineMap.set(parseInt(m[1], 10), m[2]);
+          }
+          for (let i = 0; i < textNodes.length; i++) {
+            if (lineMap.has(i)) {
+              textNodes[i].textContent = lineMap.get(i)!;
+            }
+          }
+        }
+
+        setBilingualResult({ translated: sanitizeHtml(doc.body.innerHTML), segments: [], _isHtml: true } as TranslateResult & { _isHtml?: boolean });
+      } else {
+        // Plain text email
+        const textToTranslate = message.body_text
+          || new DOMParser().parseFromString(message.body_html_raw || "", "text/html").body.textContent
+          || "";
+        const result = await translateText(textToTranslate, "auto", uiLang);
+        setBilingualResult({ ...result, _isHtml: false } as TranslateResult & { _isHtml?: boolean });
+      }
     } catch (err) {
       console.error("Translation failed:", err);
     } finally {
@@ -145,7 +267,7 @@ export default function MessageDetail({ messageId, onBack }: Props) {
           fontSize: "14px",
         }}
       >
-        Message not found
+        {t("common.messageNotFound", "Message not found")}
       </div>
     );
   }
@@ -170,6 +292,7 @@ export default function MessageDetail({ messageId, onBack }: Props) {
         <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
           <button
             onClick={onBack}
+            aria-label={t("compose.back", "Back")}
             style={{
               background: "none",
               border: "none",
@@ -194,7 +317,7 @@ export default function MessageDetail({ messageId, onBack }: Props) {
               margin: 0,
             }}
           >
-            {message.subject || "(no subject)"}
+            {message.subject || t("inbox.noSubject", "(no subject)")}
           </h2>
           <div style={{ position: "relative", marginLeft: "auto", flexShrink: 0 }}>
             <button
@@ -209,7 +332,8 @@ export default function MessageDetail({ messageId, onBack }: Props) {
                 display: "flex",
                 alignItems: "center",
               }}
-              title="Snooze message"
+              title={t("messageActions.snooze", "Snooze message")}
+              aria-label={t("messageActions.snooze", "Snooze message")}
             >
               <Clock size={16} />
             </button>
@@ -237,43 +361,115 @@ export default function MessageDetail({ messageId, onBack }: Props) {
               alignItems: "center",
               flexShrink: 0,
             }}
-            title="Toggle bilingual view"
+            title={t("messageActions.bilingualView", "Toggle bilingual view")}
+            aria-label={t("messageActions.bilingualView", "Toggle bilingual view")}
           >
             <Languages size={16} />
           </button>
         </div>
         {/* Action Toolbar */}
-        <div style={{ display: "flex", gap: "2px", padding: "4px 16px 4px 48px" }}>
+        <div style={{ display: "flex", gap: "2px", padding: "4px 16px 4px 48px", position: "relative" }}>
           {([
             { icon: Reply, label: t("messageActions.reply"), action: () => openCompose("reply", message) },
+            { icon: ReplyAll, label: t("messageActions.replyAll"), action: () => openCompose("reply-all", message) },
             { icon: Forward, label: t("messageActions.forward"), action: () => openCompose("forward", message) },
             {
               icon: Star,
               label: message.is_starred ? t("messageActions.unstar") : t("messageActions.star"),
-              action: async () => {
-                await updateMessageFlags(message.id, undefined, !message.is_starred);
-                setMessage({ ...message, is_starred: !message.is_starred });
+              action: () => {
+                flagsMutation.mutate(
+                  { messageId: message.id, isStarred: !message.is_starred },
+                  { onSuccess: () => setMessage({ ...message, is_starred: !message.is_starred }) },
+                );
               },
               active: message.is_starred,
             },
             {
-              icon: Archive,
-              label: t("messageActions.archive"),
-              action: async () => {},
-              disabled: true,
+              icon: folderRole === "archive" ? RotateCcw : Archive,
+              label: folderRole === "archive"
+                ? t("messageActions.unarchive", "Unarchive")
+                : t("messageActions.archive"),
+              action: async () => {
+                queryClient.setQueriesData<MessageSummary[]>({ queryKey: ["messages"] }, (old) => old?.filter((m) => m.id !== message.id));
+                onBack();
+                try {
+                  const result = await archiveMessage(message.id);
+                  if (result === "skipped") return;
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  queryClient.invalidateQueries({ queryKey: ["threads"] });
+                  if (result === "unarchived") {
+                    useToastStore.getState().addToast({
+                      message: t("messageActions.unarchiveSuccess", "Message moved to inbox"),
+                      type: "success",
+                    });
+                  } else {
+                    useToastStore.getState().addToast({
+                      message: t("messageActions.archiveSuccess", "Message archived"),
+                      type: "success",
+                    });
+                  }
+                } catch {
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  useToastStore.getState().addToast({
+                    message: folderRole === "archive"
+                      ? t("messageActions.unarchiveFailed", "Failed to unarchive")
+                      : t("messageActions.archiveFailed", "Failed to archive message"),
+                    type: "error",
+                  });
+                }
+              },
             },
+            ...(folderRole === "trash" ? [{
+              icon: RotateCcw,
+              label: t("messageActions.restore", "Restore"),
+              action: async () => {
+                queryClient.setQueriesData<MessageSummary[]>({ queryKey: ["messages"] }, (old) => old?.filter((m) => m.id !== message.id));
+                onBack();
+                try {
+                  await restoreMessage(message.id);
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  useToastStore.getState().addToast({
+                    message: t("messageActions.restoreSuccess", "Message restored to inbox"),
+                    type: "success",
+                  });
+                } catch {
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  useToastStore.getState().addToast({
+                    message: t("messageActions.restoreFailed", "Failed to restore message"),
+                    type: "error",
+                  });
+                }
+              },
+            }] : []),
             {
               icon: Trash2,
               label: t("messageActions.delete"),
-              action: async () => {},
-              disabled: true,
+              action: async () => {
+                queryClient.setQueriesData<MessageSummary[]>({ queryKey: ["messages"] }, (old) => old?.filter((m) => m.id !== message.id));
+                onBack();
+                try {
+                  await deleteMessage(message.id);
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  queryClient.invalidateQueries({ queryKey: ["threads"] });
+                  useToastStore.getState().addToast({
+                    message: t("messageActions.deleteSuccess", "Message deleted"),
+                    type: "success",
+                  });
+                } catch {
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  useToastStore.getState().addToast({
+                    message: t("messageActions.deleteFailed", "Failed to delete message"),
+                    type: "error",
+                  });
+                }
+              },
             },
-            { icon: LayoutGrid, label: t("messageActions.addToKanban"), action: () => moveToKanban(message.id, "todo") },
-          ] as const).map(({ icon: Icon, label, action, active, disabled }: { icon: React.ComponentType<{ size?: number }>; label: string; action: () => void; active?: boolean; disabled?: boolean }, i) => (
+          ] as Array<{ icon: React.ComponentType<{ size?: number }>; label: string; action: () => void; active?: boolean; disabled?: boolean }>).map(({ icon: Icon, label, action, active, disabled }, i) => (
             <button
               key={i}
               onClick={disabled ? undefined : action}
               title={disabled ? label + " (coming soon)" : label}
+              aria-label={label}
               style={{
                 background: "none",
                 border: "none",
@@ -292,6 +488,74 @@ export default function MessageDetail({ messageId, onBack }: Props) {
               <Icon size={16} />
             </button>
           ))}
+          {/* Kanban button + picker */}
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setShowKanbanPicker(true)}
+              title={t("messageActions.addToKanban")}
+              aria-label={t("messageActions.addToKanban")}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "6px 8px",
+                borderRadius: "4px",
+                color: inKanban ? "var(--color-accent)" : "var(--color-text-secondary)",
+                display: "flex",
+                alignItems: "center",
+                transition: "background-color 0.12s ease, color 0.12s ease",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "var(--color-bg-hover)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "transparent"; }}
+            >
+              <LayoutGrid size={16} />
+            </button>
+            {showKanbanPicker && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute",
+                  right: "0px",
+                  top: "100%",
+                  marginTop: "4px",
+                  backgroundColor: "var(--color-bg)",
+                  border: "1px solid var(--color-border)",
+                  borderRadius: "8px",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+                  padding: "4px",
+                  zIndex: 10,
+                  minWidth: "140px",
+                }}
+              >
+                {([
+                  { col: "todo" as const, label: t("kanban.todo", "To Do") },
+                  { col: "waiting" as const, label: t("kanban.waiting", "Waiting") },
+                  { col: "done" as const, label: t("kanban.done", "Done") },
+                ]).map(({ col, label }) => (
+                  <button
+                    key={col}
+                    onClick={() => handleAddToKanban(col)}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      padding: "8px 12px",
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontSize: "13px",
+                      color: "var(--color-text-primary)",
+                      borderRadius: "4px",
+                      textAlign: "left",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--color-bg-hover)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div style={{ paddingLeft: "32px" }}>
           <div style={{ fontSize: "13px", color: "var(--color-text-primary)", marginBottom: "2px" }}>
@@ -321,19 +585,30 @@ export default function MessageDetail({ messageId, onBack }: Props) {
 
       {/* Body */}
       <div style={{ flex: 1, overflow: "auto", padding: "16px" }} onMouseUp={handleMouseUp}>
-        {bilingualMode ? (
-          bilingualLoading ? (
-            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>Translating...</div>
-          ) : bilingualResult ? (
-            <BilingualView segments={bilingualResult.segments} />
+        {bilingualMode && bilingualLoading ? (
+            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{t("common.translating", "Translating...")}</div>
+        ) : bilingualMode && bilingualResult ? (
+          (bilingualResult as TranslateResult & { _isHtml?: boolean })._isHtml ? (
+            <ShadowDomEmail html={bilingualResult.translated} />
           ) : (
-            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>Translation failed</div>
+            <pre
+              style={{
+                fontSize: "14px",
+                color: "var(--color-text-primary)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                margin: 0,
+                fontFamily: "inherit",
+                lineHeight: 1.7,
+              }}
+            >
+              {bilingualResult.translated}
+            </pre>
           )
+        ) : bilingualMode && !bilingualLoading ? (
+            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{t("common.translationFailed", "Translation failed")}</div>
         ) : rendered && rendered.html ? (
-          <div
-            dangerouslySetInnerHTML={{ __html: rendered.html }}
-            style={{ fontSize: "14px", color: "var(--color-text-primary)" }}
-          />
+          <ShadowDomEmail html={rendered.html} />
         ) : (
           <pre
             style={{

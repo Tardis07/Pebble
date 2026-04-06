@@ -1,9 +1,6 @@
-import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useUIStore } from "@/stores/ui.store";
 import type { Theme, Language } from "@/stores/ui.store";
-
-const NOTIFICATIONS_KEY = "pebble-notifications-enabled";
 
 const THEMES: { id: Theme; labelKey: string; descKey: string }[] = [
   { id: "light", labelKey: "settings.themeLight", descKey: "settings.themeLightDesc" },
@@ -22,18 +19,6 @@ export default function AppearanceTab() {
   const setTheme = useUIStore((s) => s.setTheme);
   const language = useUIStore((s) => s.language);
   const setLanguage = useUIStore((s) => s.setLanguage);
-
-  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
-    return localStorage.getItem(NOTIFICATIONS_KEY) !== "false";
-  });
-
-  const toggleNotifications = useCallback(() => {
-    setNotificationsEnabled((prev) => {
-      const next = !prev;
-      localStorage.setItem(NOTIFICATIONS_KEY, String(next));
-      return next;
-    });
-  }, []);
 
   return (
     <div>
@@ -83,23 +68,6 @@ export default function AppearanceTab() {
           </button>
         ))}
       </div>
-
-      <h3 style={{ fontSize: "14px", fontWeight: 600, marginBottom: "16px", marginTop: "32px" }}>
-        {t("settings.notifications")}
-      </h3>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          cursor: "pointer",
-          fontSize: "13px",
-          color: "var(--color-text-primary)",
-        }}
-      >
-        <input type="checkbox" checked={notificationsEnabled} onChange={toggleNotifications} />
-        <span>{t("settings.enableNotifications")}</span>
-      </label>
     </div>
   );
 }

@@ -1,6 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useTranslation } from "react-i18next";
 
 export default function TitleBar() {
+  const { t } = useTranslation();
   const appWindow = getCurrentWindow();
 
   return (
@@ -21,23 +23,16 @@ export default function TitleBar() {
         <button
           onClick={() => appWindow.minimize()}
           className="h-9 w-11 inline-flex items-center justify-center hover:bg-black/5"
-          aria-label="Minimize"
+          aria-label={t("titleBar.minimize")}
         >
           <svg width="10" height="1" viewBox="0 0 10 1">
             <rect width="10" height="1" fill="currentColor" />
           </svg>
         </button>
         <button
-          onClick={async () => {
-            const maximized = await appWindow.isMaximized();
-            if (maximized) {
-              await appWindow.unmaximize();
-            } else {
-              await appWindow.maximize();
-            }
-          }}
+          onClick={() => appWindow.toggleMaximize()}
           className="h-9 w-11 inline-flex items-center justify-center hover:bg-black/5"
-          aria-label="Maximize"
+          aria-label={t("titleBar.maximize")}
         >
           <svg width="10" height="10" viewBox="0 0 10 10">
             <rect
@@ -54,7 +49,7 @@ export default function TitleBar() {
         <button
           onClick={() => appWindow.close()}
           className="h-9 w-11 inline-flex items-center justify-center hover:bg-red-500 hover:text-white"
-          aria-label="Close"
+          aria-label={t("titleBar.close")}
         >
           <svg width="10" height="10" viewBox="0 0 10 10">
             <path d="M1,1 L9,9 M9,1 L1,9" stroke="currentColor" strokeWidth="1.2" />

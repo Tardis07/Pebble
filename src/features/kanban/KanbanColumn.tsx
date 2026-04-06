@@ -1,5 +1,6 @@
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { useTranslation } from "react-i18next";
 import type { KanbanColumnType, Message } from "@/lib/api";
 import KanbanCardComponent from "./KanbanCard";
 
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export default function KanbanColumn({ id, title, cardIds, messages, onRemove, onOpen }: Props) {
+  const { t } = useTranslation();
   const { setNodeRef, isOver } = useDroppable({ id });
 
   return (
@@ -82,7 +84,7 @@ export default function KanbanColumn({ id, title, cardIds, messages, onRemove, o
               padding: "24px 0",
             }}
           >
-            Drop messages here
+            {t("kanban.dropHere")}
           </div>
         )}
       </div>

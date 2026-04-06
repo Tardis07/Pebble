@@ -1,5 +1,6 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useTranslation } from "react-i18next";
 import type { Message } from "@/lib/api";
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export default function KanbanCard({ id, message, onRemove, onOpen }: Props) {
+  const { t } = useTranslation();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
 
   const style = {
@@ -28,15 +30,21 @@ export default function KanbanCard({ id, message, onRemove, onOpen }: Props) {
   if (!message) {
     return (
       <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-        <span style={{ color: "var(--color-text-secondary)" }}>Loading...</span>
+        <span style={{ color: "var(--color-text-secondary)" }}>{t("common.loading")}</span>
       </div>
     );
   }
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners} onDoubleClick={() => { if (message) onOpen(id); }}>
-      <div style={{ fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {message.subject || "(No subject)"}
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <div
+        onClick={() => onOpen(id)}
+        style={{ cursor: "pointer" }}
+        title={t("kanban.clickToOpen", "Click to open message")}
+      >
+        <div style={{ fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {message.subject || t("common.noSubject")}
+        </div>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ color: "var(--color-text-secondary)", fontSize: "12px" }}>
@@ -56,7 +64,7 @@ export default function KanbanCard({ id, message, onRemove, onOpen }: Props) {
             fontSize: "14px",
             padding: "0 4px",
           }}
-          title="Remove from board"
+          title={t("kanban.removeFromBoard")}
         >
           ×
         </button>

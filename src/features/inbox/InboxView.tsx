@@ -1,39 +1,59 @@
 import { useMailStore } from "@/stores/mail.store";
-import { useAccountsQuery, useMessagesQuery, useThreadsQuery } from "@/hooks/queries";
+import { useAccountsQuery, useMessagesQuery, useThreadsQuery, useFoldersQuery } from "@/hooks/queries";
 import { useUIStore } from "@/stores/ui.store";
+import { useToastStore } from "@/stores/toast.store";
 import MessageList from "@/components/MessageList";
 import MessageDetail from "@/components/MessageDetail";
 import ThreadView from "./ThreadView";
 import ThreadItem from "@/components/ThreadItem";
 import SearchBar from "@/components/SearchBar";
-import { useEffect, useRef } from "react";
+import { useRef, useState } from "react";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { List, MessageSquare, Mail } from "lucide-react";
+import { List, MessageSquare, Mail, Trash2 } from "lucide-react";
 import { MessageListSkeleton } from "@/components/Skeleton";
+import { emptyTrash } from "@/lib/api";
+import type { MessageSummary, ThreadSummary } from "@/lib/api";
+
+const EMPTY_MESSAGES: MessageSummary[] = [];
+const EMPTY_THREADS: ThreadSummary[] = [];
 
 export default function InboxView() {
   const { t } = useTranslation();
   const { setActiveView } = useUIStore();
   const {
     activeFolderId,
+    activeAccountId,
     selectedMessageId, setSelectedMessage,
     threadView, toggleThreadView,
-    selectedThreadId, selectThread,
-    setMessages,
+    selectedThreadId, setSelectedThreadId,
   } = useMailStore();
   const { data: accounts = [] } = useAccountsQuery();
+  const { data: folders = [] } = useFoldersQuery(activeAccountId);
+  const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
+  const [showTrashConfirm, setShowTrashConfirm] = useState(false);
 
-  const { data: messages = [], isLoading: loadingMessages } = useMessagesQuery(
+  const activeFolder = folders.find((f) => f.id === activeFolderId);
+  const isTrashFolder = activeFolder?.role === "trash";
+
+  // Collect all folder IDs with the same role for merged queries (e.g. spam + virus + ad)
+  const siblingFolderIds = (() => {
+    if (!activeFolder?.role) return undefined;
+    const ids = folders.filter((f) => f.role === activeFolder.role).map((f) => f.id);
+    return ids.length > 1 ? ids : undefined;
+  })();
+
+  const { data: messages = EMPTY_MESSAGES, isLoading: loadingMessages } = useMessagesQuery(
     threadView ? null : activeFolderId,
+    50, 0,
+    threadView ? undefined : siblingFolderIds,
   );
-  const { data: threads = [], isLoading: loadingThreads } = useThreadsQuery(
+  const { data: threads = EMPTY_THREADS, isLoading: loadingThreads } = useThreadsQuery(
     threadView ? activeFolderId : null,
   );
-
-  useEffect(() => {
-    setMessages(messages);
-  }, [messages, setMessages]);
 
   const detailOpen = threadView ? selectedThreadId !== null : selectedMessageId !== null;
 
@@ -71,6 +91,41 @@ export default function InboxView() {
         <div style={{ flex: 1 }}>
           <SearchBar onSearch={() => {}} onClear={() => {}} />
         </div>
+        {isTrashFolder && messages.length > 0 && (
+          <>
+            <button
+              onClick={() => setShowTrashConfirm(true)}
+              style={{
+                background: "none", border: "1px solid var(--color-border)", cursor: "pointer",
+                padding: "4px 10px", borderRadius: "4px", color: "var(--color-text-secondary)",
+                display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", marginRight: "4px",
+              }}
+              title={t("messageActions.emptyTrash", "Empty Trash")}
+            >
+              <Trash2 size={14} />
+              {t("messageActions.emptyTrash", "Empty Trash")}
+            </button>
+            {showTrashConfirm && (
+              <ConfirmDialog
+                title={t("messageActions.emptyTrash", "Empty Trash")}
+                message={t("messageActions.emptyTrashConfirm", "Permanently delete all messages in Trash?")}
+                destructive
+                onCancel={() => setShowTrashConfirm(false)}
+                onConfirm={async () => {
+                  setShowTrashConfirm(false);
+                  if (!activeAccountId) return;
+                  try {
+                    const count = await emptyTrash(activeAccountId);
+                    queryClient.invalidateQueries({ queryKey: ["messages"] });
+                    addToast({ message: t("messageActions.emptyTrashSuccess", { count }), type: "success" });
+                  } catch {
+                    addToast({ message: t("messageActions.emptyTrashFailed"), type: "error" });
+                  }
+                }}
+              />
+            )}
+          </>
+        )}
         <button
           onClick={toggleThreadView}
           style={{
@@ -78,7 +133,7 @@ export default function InboxView() {
             color: "var(--color-text-secondary)", display: "flex", alignItems: "center",
             gap: "4px", fontSize: "12px", marginRight: "8px",
           }}
-          title={threadView ? "Message view" : "Thread view"}
+          title={threadView ? t("inbox.messageView") : t("inbox.threadView")}
         >
           {threadView ? <List size={16} /> : <MessageSquare size={16} />}
         </button>
@@ -99,7 +154,7 @@ export default function InboxView() {
             <ThreadList
               threads={threads}
               selectedThreadId={selectedThreadId}
-              onSelectThread={selectThread}
+              onSelectThread={setSelectedThreadId}
               loading={loadingThreads}
             />
           ) : (
@@ -108,6 +163,14 @@ export default function InboxView() {
               selectedMessageId={selectedMessageId}
               onSelectMessage={(id) => setSelectedMessage(id)}
               loading={loadingMessages}
+              onToggleStar={(messageId, newStarred) => {
+                queryClient.setQueriesData<MessageSummary[]>(
+                  { queryKey: ["messages"] },
+                  (old) => old?.map((m) =>
+                    m.id === messageId ? { ...m, is_starred: newStarred } : m,
+                  ),
+                );
+              }}
             />
           )}
         </div>
@@ -121,6 +184,7 @@ export default function InboxView() {
               <MessageDetail
                 messageId={selectedMessageId}
                 onBack={() => setSelectedMessage(null)}
+                folderRole={activeFolder?.role}
               />
             ) : null}
           </div>
@@ -137,6 +201,7 @@ function ThreadList({ threads, selectedThreadId, onSelectThread, loading }: {
   onSelectThread: (id: string) => void;
   loading: boolean;
 }) {
+  const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: threads.length,
@@ -151,7 +216,7 @@ function ThreadList({ threads, selectedThreadId, onSelectThread, loading }: {
   if (threads.length === 0) {
     return (
       <div className="fade-in" style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--color-text-secondary)", fontSize: "14px" }}>
-        No threads
+        {t("common.noThreads")}
       </div>
     );
   }

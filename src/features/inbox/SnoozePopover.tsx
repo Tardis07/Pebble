@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { snoozeMessage } from "@/lib/api";
+import { useUIStore } from "@/stores/ui.store";
 
 interface Props {
   messageId: string;
@@ -8,14 +9,14 @@ interface Props {
   onSnoozed: () => void;
 }
 
-function getPresets(): { label: string; getTimestamp: () => number }[] {
+function getPresets(t: (key: string, fallback: string) => string): { label: string; getTimestamp: () => number }[] {
   return [
     {
-      label: "1 hour",
+      label: t("snooze.oneHour", "1 hour"),
       getTimestamp: () => Math.floor(Date.now() / 1000) + 3600,
     },
     {
-      label: "Tonight (8 PM)",
+      label: t("snooze.tonight", "Tonight (8 PM)"),
       getTimestamp: () => {
         const d = new Date();
         d.setHours(20, 0, 0, 0);
@@ -24,7 +25,7 @@ function getPresets(): { label: string; getTimestamp: () => number }[] {
       },
     },
     {
-      label: "Tomorrow (9 AM)",
+      label: t("snooze.tomorrow", "Tomorrow (9 AM)"),
       getTimestamp: () => {
         const d = new Date();
         d.setDate(d.getDate() + 1);
@@ -33,7 +34,7 @@ function getPresets(): { label: string; getTimestamp: () => number }[] {
       },
     },
     {
-      label: "Next Monday (9 AM)",
+      label: t("snooze.nextMonday", "Next Monday (9 AM)"),
       getTimestamp: () => {
         const d = new Date();
         const day = d.getDay();
@@ -54,7 +55,8 @@ export default function SnoozePopover({ messageId, onClose, onSnoozed }: Props) 
   async function handleSnooze(getTimestamp: () => number) {
     setLoading(true);
     try {
-      await snoozeMessage(messageId, getTimestamp(), "inbox");
+      const returnTo = useUIStore.getState().activeView;
+      await snoozeMessage(messageId, getTimestamp(), returnTo);
       onSnoozed();
     } catch (err) {
       console.error("Snooze failed:", err);
@@ -93,9 +95,9 @@ export default function SnoozePopover({ messageId, onClose, onSnoozed }: Props) 
           borderBottom: "1px solid var(--color-border)",
         }}
       >
-        Snooze until...
+        {t("snooze.until", "Snooze until...")}
       </div>
-      {getPresets().map((preset) => (
+      {getPresets(t).map((preset) => (
         <button
           key={preset.label}
           disabled={loading}

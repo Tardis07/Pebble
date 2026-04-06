@@ -1,105 +1,147 @@
 import type { Command } from "@/stores/command.store";
 import { useUIStore } from "@/stores/ui.store";
 import { useMailStore } from "@/stores/mail.store";
-import { updateMessageFlags } from "@/lib/api";
+import { useKanbanStore } from "@/stores/kanban.store";
+import { useToastStore } from "@/stores/toast.store";
+import { updateMessageFlags, archiveMessage } from "@/lib/api";
+import type { MessageSummary } from "@/lib/api";
+import { queryClient } from "@/lib/query-client";
 
 const NOTIFICATIONS_KEY = "pebble-notifications-enabled";
 
-export function buildCommands(): Command[] {
+export function buildCommands(t: (key: string, defaultValue: string) => string): Command[] {
   return [
     // Navigation
     {
       id: "nav:inbox",
-      name: "Go to Inbox",
+      name: t("commands.goToInbox", "Go to Inbox"),
       shortcut: "Ctrl+Shift+I",
-      category: "Navigation",
+      category: t("commands.navigation", "Navigation"),
       execute: () => useUIStore.getState().setActiveView("inbox"),
     },
     {
       id: "nav:kanban",
-      name: "Go to Kanban",
+      name: t("commands.goToKanban", "Go to Kanban"),
       shortcut: "Ctrl+Shift+K",
-      category: "Navigation",
+      category: t("commands.navigation", "Navigation"),
       execute: () => useUIStore.getState().setActiveView("kanban"),
     },
     {
       id: "nav:settings",
-      name: "Go to Settings",
-      category: "Navigation",
+      name: t("commands.goToSettings", "Go to Settings"),
+      category: t("commands.navigation", "Navigation"),
       execute: () => useUIStore.getState().setActiveView("settings"),
     },
     {
       id: "nav:search",
-      name: "Open Search",
+      name: t("commands.openSearch", "Open Search"),
       shortcut: "Ctrl+Shift+F",
-      category: "Navigation",
+      category: t("commands.navigation", "Navigation"),
       execute: () => useUIStore.getState().setActiveView("search"),
     },
     // View
     {
       id: "view:toggle-sidebar",
-      name: "Toggle Sidebar",
-      category: "View",
+      name: t("commands.toggleSidebar", "Toggle Sidebar"),
+      category: t("commands.view", "View"),
       execute: () => useUIStore.getState().toggleSidebar(),
     },
     // Mail actions
     {
       id: "mail:mark-read",
-      name: "Mark as Read",
-      category: "Mail",
+      name: t("commands.markAsRead", "Mark as Read"),
+      category: t("commands.mail", "Mail"),
       execute: async () => {
         const id = useMailStore.getState().selectedMessageId;
-        if (id) await updateMessageFlags(id, true);
+        if (id) {
+          await updateMessageFlags(id, true);
+          queryClient.invalidateQueries({ queryKey: ["messages"] });
+        }
       },
     },
     {
       id: "mail:mark-unread",
-      name: "Mark as Unread",
-      category: "Mail",
+      name: t("commands.markAsUnread", "Mark as Unread"),
+      category: t("commands.mail", "Mail"),
       execute: async () => {
         const id = useMailStore.getState().selectedMessageId;
-        if (id) await updateMessageFlags(id, false);
+        if (id) {
+          await updateMessageFlags(id, false);
+          queryClient.invalidateQueries({ queryKey: ["messages"] });
+        }
       },
     },
     {
       id: "mail:star",
-      name: "Toggle Star",
+      name: t("commands.toggleStar", "Toggle Star"),
       shortcut: "S",
-      category: "Mail",
+      category: t("commands.mail", "Mail"),
       execute: async () => {
-        const { selectedMessageId, messages } = useMailStore.getState();
+        const { selectedMessageId } = useMailStore.getState();
         if (!selectedMessageId) return;
-        const msg = messages.find((m) => m.id === selectedMessageId);
-        if (msg) await updateMessageFlags(selectedMessageId, undefined, !msg.is_starred);
+        const entries = queryClient.getQueriesData<MessageSummary[]>({ queryKey: ["messages"] });
+        let msg: MessageSummary | undefined;
+        for (const [, data] of entries) {
+          msg = data?.find((m) => m.id === selectedMessageId);
+          if (msg) break;
+        }
+        if (msg) {
+          await updateMessageFlags(selectedMessageId, undefined, !msg.is_starred);
+          queryClient.invalidateQueries({ queryKey: ["messages"] });
+        }
       },
     },
     {
       id: "mail:compose",
-      name: "Compose New Message",
-      category: "Mail",
+      name: t("commands.composeNew", "Compose New Message"),
+      category: t("commands.mail", "Mail"),
       execute: () => useUIStore.getState().openCompose("new"),
     },
-    // Cloud sync
+    // Settings
     {
-      id: "sync:backup",
-      name: "Backup to Cloud",
-      shortcut: "Ctrl+Shift+B",
-      category: "Cloud Sync",
-      execute: () => useUIStore.getState().setActiveView("settings"),
+      id: "mail:archive",
+      name: t("commands.archiveMessage", "Archive Message"),
+      shortcut: "E",
+      category: t("commands.mail", "Mail"),
+      execute: async () => {
+        const id = useMailStore.getState().selectedMessageId;
+        if (!id) return;
+        queryClient.setQueriesData<MessageSummary[]>({ queryKey: ["messages"] }, (old) => old?.filter((m) => m.id !== id));
+        useMailStore.getState().setSelectedMessage(null);
+        try {
+          const result = await archiveMessage(id);
+          if (result === "skipped") return;
+          queryClient.invalidateQueries({ queryKey: ["messages"] });
+          const msg = result === "unarchived" ? t("messageActions.unarchiveSuccess", "Message moved to inbox") : t("messageActions.archiveSuccess", "Message archived");
+          useToastStore.getState().addToast({ message: msg, type: "success" });
+        } catch {
+          queryClient.invalidateQueries({ queryKey: ["messages"] });
+          useToastStore.getState().addToast({ message: t("messageActions.archiveFailed", "Failed to archive"), type: "error" });
+        }
+      },
     },
     {
-      id: "sync:restore",
-      name: "Restore from Cloud",
-      category: "Cloud Sync",
-      execute: () => useUIStore.getState().setActiveView("settings"),
+      id: "mail:add-to-kanban",
+      name: t("commands.addToKanban", "Add to Kanban"),
+      category: t("commands.mail", "Mail"),
+      execute: async () => {
+        const id = useMailStore.getState().selectedMessageId;
+        if (!id) return;
+        try {
+          await useKanbanStore.getState().addCard(id, "todo");
+          useToastStore.getState().addToast({ message: t("messageActions.kanbanSuccess", "Added to kanban board"), type: "success" });
+        } catch {
+          useToastStore.getState().addToast({ message: t("messageActions.kanbanFailed", "Failed to add to kanban"), type: "error" });
+        }
+      },
     },
     // Settings
     {
       id: "settings:toggle-notifications",
-      name: "Toggle Notifications",
-      category: "Settings",
+      name: t("commands.toggleNotifications", "Toggle Notifications"),
+      category: t("commands.settings", "Settings"),
       execute: () => {
-        const current = localStorage.getItem(NOTIFICATIONS_KEY) !== "false";
+        const current = localStorage.getItem(NOTIFICATIONS_KEY) === "true";
         localStorage.setItem(NOTIFICATIONS_KEY, String(!current));
       },
     },

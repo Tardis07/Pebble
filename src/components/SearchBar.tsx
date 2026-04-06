@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useUIStore } from "@/stores/ui.store";
 
 interface Props {
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export default function SearchBar({ onSearch, onClear }: Props) {
+  const { t } = useTranslation();
   const [value, setValue] = useState("");
   const setActiveView = useUIStore((s) => s.setActiveView);
 
@@ -42,7 +44,8 @@ export default function SearchBar({ onSearch, onClear }: Props) {
         type="text"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder="Search messages..."
+        placeholder={t("inbox.searchPlaceholder", "Search messages...")}
+        aria-label={t("search.title", "Search")}
         style={{
           flex: 1,
           border: "none",
@@ -56,6 +59,7 @@ export default function SearchBar({ onSearch, onClear }: Props) {
         <button
           type="button"
           onClick={handleClear}
+          aria-label={t("search.clearFilters", "Clear filters")}
           style={{
             background: "none",
             border: "none",
@@ -72,7 +76,8 @@ export default function SearchBar({ onSearch, onClear }: Props) {
       <button
         type="button"
         onClick={() => setActiveView("search")}
-        title="Advanced search"
+        title={t("search.advanced", "Advanced search")}
+        aria-label={t("search.advanced", "Advanced search")}
         style={{
           background: "none",
           border: "none",

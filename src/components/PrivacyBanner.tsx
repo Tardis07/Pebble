@@ -1,13 +1,15 @@
 import { Shield } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { RenderedHtml } from "@/lib/api";
 
 interface Props {
   rendered: RenderedHtml;
   onLoadImages: () => void;
-  onTrustSender: () => void;
+  onTrustSender: (trustType: "images" | "all") => void;
 }
 
 export default function PrivacyBanner({ rendered, onLoadImages, onTrustSender }: Props) {
+  const { t } = useTranslation();
   const totalBlocked = rendered.trackers_blocked.length + rendered.images_blocked;
 
   if (totalBlocked === 0) {
@@ -16,10 +18,10 @@ export default function PrivacyBanner({ rendered, onLoadImages, onTrustSender }:
 
   const parts: string[] = [];
   if (rendered.trackers_blocked.length > 0) {
-    parts.push(`${rendered.trackers_blocked.length} tracker${rendered.trackers_blocked.length !== 1 ? "s" : ""}`);
+    parts.push(t("privacy.tracker", { count: rendered.trackers_blocked.length }));
   }
   if (rendered.images_blocked > 0) {
-    parts.push(`${rendered.images_blocked} image${rendered.images_blocked !== 1 ? "s" : ""}`);
+    parts.push(t("privacy.image", { count: rendered.images_blocked }));
   }
 
   return (
@@ -37,10 +39,42 @@ export default function PrivacyBanner({ rendered, onLoadImages, onTrustSender }:
     >
       <Shield size={14} color="#f59e0b" />
       <span style={{ flex: 1 }}>
-        Blocked {parts.join(" and ")}
+        {t("privacy.blocked", { items: parts.join(` ${t("privacy.and")} `) })}
       </span>
+      {rendered.images_blocked > 0 && (
+        <>
+          <button
+            onClick={onLoadImages}
+            style={{
+              fontSize: "12px",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              border: "1px solid var(--color-border)",
+              backgroundColor: "transparent",
+              color: "var(--color-text-primary)",
+              cursor: "pointer",
+            }}
+          >
+            {t("privacy.loadImages")}
+          </button>
+          <button
+            onClick={() => onTrustSender("images")}
+            style={{
+              fontSize: "12px",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              border: "1px solid var(--color-border)",
+              backgroundColor: "transparent",
+              color: "var(--color-text-primary)",
+              cursor: "pointer",
+            }}
+          >
+            {t("privacy.trustImages", "Trust images")}
+          </button>
+        </>
+      )}
       <button
-        onClick={onLoadImages}
+        onClick={() => onTrustSender("all")}
         style={{
           fontSize: "12px",
           padding: "2px 8px",
@@ -51,21 +85,7 @@ export default function PrivacyBanner({ rendered, onLoadImages, onTrustSender }:
           cursor: "pointer",
         }}
       >
-        Load images
-      </button>
-      <button
-        onClick={onTrustSender}
-        style={{
-          fontSize: "12px",
-          padding: "2px 8px",
-          borderRadius: "4px",
-          border: "1px solid var(--color-border)",
-          backgroundColor: "transparent",
-          color: "var(--color-text-primary)",
-          cursor: "pointer",
-        }}
-      >
-        Trust sender
+        {t("privacy.trustSender", "Trust sender")}
       </button>
     </div>
   );

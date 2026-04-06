@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { File, FileText, Image, FileArchive, Film, Music, Download, Loader, Check } from "lucide-react";
-import { listAttachments, getAttachmentPath, downloadAttachment } from "@/lib/api";
+import { listAttachments, downloadAttachment } from "@/lib/api";
 import type { Attachment } from "@/lib/api";
 
 interface Props {
@@ -55,11 +55,17 @@ export default function AttachmentList({ messageId }: Props) {
   async function handleDownload(attachment: Attachment) {
     setDownloadingId(attachment.id);
     try {
-      await downloadAttachment(attachment.id, attachment.filename);
-      const path = await getAttachmentPath(attachment.id);
-      if (path) {
-        setDownloadedPaths((prev) => ({ ...prev, [attachment.id]: path }));
-      }
+      const { downloadDir } = await import("@tauri-apps/api/path");
+      const dir = await downloadDir();
+      // Sanitize filename to prevent path traversal
+      const safeName = attachment.filename
+        .replace(/[/\\]/g, "_")
+        .replace(/\.\./g, "")
+        .replace(/^\.+/, "")
+        .trim() || "download";
+      const savePath = `${dir}/${safeName}`;
+      await downloadAttachment(attachment.id, savePath);
+      setDownloadedPaths((prev) => ({ ...prev, [attachment.id]: savePath }));
     } catch (err) {
       console.error("Failed to download attachment:", err);
     } finally {

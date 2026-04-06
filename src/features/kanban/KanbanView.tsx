@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { DndContext, DragEndEvent, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { arrayMove } from "@dnd-kit/sortable";
 import type { KanbanColumnType, Message } from "@/lib/api";
 import { getMessage } from "@/lib/api";
 import { useKanbanStore } from "@/stores/kanban.store";
@@ -8,13 +10,14 @@ import { useMailStore } from "@/stores/mail.store";
 import KanbanColumn from "./KanbanColumn";
 import { KanbanSkeleton } from "@/components/Skeleton";
 
-const COLUMNS: { id: KanbanColumnType; title: string }[] = [
-  { id: "todo", title: "To Do" },
-  { id: "waiting", title: "Waiting" },
-  { id: "done", title: "Done" },
+const COLUMN_IDS: { id: KanbanColumnType; titleKey: string }[] = [
+  { id: "todo", titleKey: "kanban.todo" },
+  { id: "waiting", titleKey: "kanban.waiting" },
+  { id: "done", titleKey: "kanban.done" },
 ];
 
 export default function KanbanView() {
+  const { t } = useTranslation();
   const { cards, loading, fetchCards, moveCard, removeCard } = useKanbanStore();
   const [messages, setMessages] = useState<Map<string, Message>>(new Map());
 
@@ -64,20 +67,34 @@ export default function KanbanView() {
 
     // Determine target column
     let targetColumn: KanbanColumnType;
-    if (COLUMNS.some((c) => c.id === overId)) {
+    if (COLUMN_IDS.some((c) => c.id === overId)) {
       targetColumn = overId as KanbanColumnType;
     } else {
-      // Dropped on another card — find that card's column
       const overCard = cards.find((c) => c.message_id === overId);
       if (!overCard) return;
       targetColumn = overCard.column;
     }
 
     const activeCard = cards.find((c) => c.message_id === activeId);
-    if (!activeCard || activeCard.column === targetColumn) return;
+    if (!activeCard) return;
 
-    const targetCards = cards.filter((c) => c.column === targetColumn);
-    moveCard(activeId, targetColumn, targetCards.length);
+    if (activeCard.column === targetColumn) {
+      // Same-column reorder
+      const columnIds = cards
+        .filter((c) => c.column === targetColumn)
+        .sort((a, b) => a.position - b.position)
+        .map((c) => c.message_id);
+      const oldIndex = columnIds.indexOf(activeId);
+      const newIndex = columnIds.indexOf(overId);
+      if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+        const reordered = arrayMove(columnIds, oldIndex, newIndex);
+        useKanbanStore.getState().reorderInColumn(targetColumn, reordered);
+      }
+    } else {
+      // Cross-column move
+      const targetCards = cards.filter((c) => c.column === targetColumn);
+      moveCard(activeId, targetColumn, targetCards.length);
+    }
   }
 
   if (loading && cards.length === 0) {
@@ -87,11 +104,11 @@ export default function KanbanView() {
   return (
     <div style={{ display: "flex", gap: "8px", padding: "16px", height: "100%", overflow: "hidden" }}>
       <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-        {COLUMNS.map((col) => (
+        {COLUMN_IDS.map((col) => (
           <KanbanColumn
             key={col.id}
             id={col.id}
-            title={col.title}
+            title={t(col.titleKey)}
             cardIds={cards.filter((c) => c.column === col.id).map((c) => c.message_id)}
             messages={messages}
             onRemove={removeCard}

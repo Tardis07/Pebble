@@ -1,0 +1,104 @@
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Star } from "lucide-react";
+import type { MessageSummary } from "@/lib/api";
+import { listStarredMessages } from "@/lib/api";
+import { useMailStore } from "@/stores/mail.store";
+import MessageItem from "@/components/MessageItem";
+import MessageDetail from "@/components/MessageDetail";
+
+export default function StarredView() {
+  const { t } = useTranslation();
+  const [messages, setMessages] = useState<MessageSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const activeAccountId = useMailStore((s) => s.activeAccountId);
+
+  useEffect(() => {
+    if (!activeAccountId) return;
+    setLoading(true);
+    listStarredMessages(activeAccountId, 100, 0)
+      .then(setMessages)
+      .finally(() => setLoading(false));
+  }, [activeAccountId]);
+
+  function handleOpen(messageId: string) {
+    setSelectedId(messageId);
+  }
+
+  if (loading) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--color-text-secondary)" }}>
+        <Star size={20} className="spinner" style={{ marginRight: "8px" }} />
+        {t("common.loading", "Loading...")}
+      </div>
+    );
+  }
+
+  if (messages.length === 0) {
+    return (
+      <div className="fade-in" style={{
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        height: "100%", gap: "12px", color: "var(--color-text-secondary)",
+      }}>
+        <Star size={40} strokeWidth={1.2} />
+        <p style={{ fontSize: "14px", margin: 0 }}>{t("starred.empty", "No starred messages")}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fade-in" style={{ display: "flex", height: "100%" }}>
+      <div style={{
+        width: selectedId ? "340px" : "100%",
+        borderRight: selectedId ? "1px solid var(--color-border)" : "none",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        transition: "width 0.15s ease",
+      }}>
+        <div style={{
+          padding: "12px 16px", borderBottom: "1px solid var(--color-border)",
+          fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)",
+          display: "flex", alignItems: "center", gap: "8px",
+        }}>
+          <Star size={16} />
+          {t("starred.title", "Starred Messages")}
+          <span style={{
+            fontSize: "12px", fontWeight: 400, color: "var(--color-text-secondary)",
+            backgroundColor: "var(--color-bg-secondary, rgba(0,0,0,0.06))",
+            padding: "2px 8px", borderRadius: "10px",
+          }}>
+            {messages.length}
+          </span>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {messages.map((msg) => (
+            <MessageItem
+              key={msg.id}
+              message={msg}
+              isSelected={msg.id === selectedId}
+              onClick={() => handleOpen(msg.id)}
+              onToggleStar={(id, newStarred) => {
+                if (!newStarred) {
+                  setMessages((prev) => prev.filter((m) => m.id !== id));
+                  if (selectedId === id) setSelectedId(null);
+                }
+              }}
+            />
+          ))}
+        </div>
+      </div>
+
+      {selectedId && (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <MessageDetail
+            messageId={selectedId}
+            onBack={() => setSelectedId(null)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}

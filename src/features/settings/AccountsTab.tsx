@@ -1,0 +1,519 @@
+import { useState } from "react";
+import { Plus, Trash2, Mail, Pencil, Plug } from "lucide-react";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
+import { deleteAccount, updateAccount, testAccountConnection } from "@/lib/api";
+import type { Account, ConnectionSecurity } from "@/lib/api";
+import { useAccountsQuery, accountsQueryKey } from "@/hooks/queries";
+import { useMailStore } from "@/stores/mail.store";
+import AccountSetup from "@/components/AccountSetup";
+
+export default function AccountsTab() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { data: accounts = [] } = useAccountsQuery();
+  const [showSetup, setShowSetup] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; email: string } | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ id: string; ok: boolean; message: string } | null>(null);
+
+  async function doTestConnection(accountId: string) {
+    setTestingId(accountId);
+    setTestResult(null);
+    try {
+      const report = await testAccountConnection(accountId);
+      setTestResult({ id: accountId, ok: true, message: report });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : typeof err === "object" && err !== null && "message" in err ? (err as { message: string }).message : String(err);
+      setTestResult({ id: accountId, ok: false, message: msg });
+    } finally {
+      setTestingId(null);
+    }
+  }
+
+  async function doDelete(accountId: string) {
+    try {
+      await deleteAccount(accountId);
+      if (useMailStore.getState().activeAccountId === accountId) {
+        useMailStore.getState().setActiveAccountId(null);
+      }
+      await queryClient.invalidateQueries({ queryKey: accountsQueryKey });
+    } catch (err) {
+      console.error("Failed to delete account:", err);
+    }
+  }
+
+  return (
+    <div>
+      {/* Section header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "20px",
+        }}
+      >
+        <h2
+          style={{
+            margin: 0,
+            fontSize: "16px",
+            fontWeight: 600,
+            color: "var(--color-text-primary)",
+          }}
+        >
+          {t("settings.emailAccounts")}
+        </h2>
+        <button
+          onClick={() => setShowSetup(true)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+            padding: "7px 14px",
+            borderRadius: "6px",
+            border: "none",
+            backgroundColor: "var(--color-accent)",
+            color: "#fff",
+            fontSize: "13px",
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          <Plus size={14} />
+          {t("settings.addAccount")}
+        </button>
+      </div>
+
+      {/* Empty state */}
+      {accounts.length === 0 ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "12px",
+            padding: "48px 0",
+            color: "var(--color-text-secondary)",
+          }}
+        >
+          <Mail size={40} strokeWidth={1.5} />
+          <p style={{ margin: 0, fontSize: "14px" }}>{t("settings.noAccounts")}</p>
+          <button
+            onClick={() => setShowSetup(true)}
+            style={{
+              marginTop: "4px",
+              padding: "8px 18px",
+              borderRadius: "6px",
+              border: "1px solid var(--color-border)",
+              backgroundColor: "transparent",
+              color: "var(--color-text-primary)",
+              fontSize: "13px",
+              cursor: "pointer",
+            }}
+          >
+            {t("settings.addFirstAccount")}
+          </button>
+        </div>
+      ) : (
+        /* Account list */
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "1px",
+            borderRadius: "8px",
+            overflow: "hidden",
+            border: "1px solid var(--color-border)",
+          }}
+        >
+          {accounts.map((account, index) => (
+            <div
+              key={account.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "14px 16px",
+                backgroundColor: "var(--color-bg)",
+                borderTop: index > 0 ? "1px solid var(--color-border)" : "none",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                <span style={{ fontSize: "13px", fontWeight: 500 }}>
+                  {account.display_name}
+                </span>
+                <span
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--color-text-secondary)",
+                  }}
+                >
+                  {account.email}
+                </span>
+                <span
+                  style={{
+                    fontSize: "11px",
+                    color: "var(--color-text-secondary)",
+                    textTransform: "capitalize",
+                  }}
+                >
+                  {account.provider}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+                <button
+                  onClick={() => doTestConnection(account.id)}
+                  disabled={testingId === account.id}
+                  title={t("accountSetup.testConnection", "Test Connection")}
+                  aria-label={t("accountSetup.testConnection", "Test Connection")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    padding: "6px",
+                    borderRadius: "6px",
+                    border: "none",
+                    backgroundColor: "transparent",
+                    color: testingId === account.id ? "var(--color-accent)" : "var(--color-text-secondary)",
+                    cursor: testingId === account.id ? "wait" : "pointer",
+                    opacity: testingId === account.id ? 0.6 : 1,
+                  }}
+                  onMouseEnter={(e) => {
+                    if (testingId !== account.id) {
+                      e.currentTarget.style.color = "var(--color-accent)";
+                      e.currentTarget.style.backgroundColor = "var(--color-bg-hover)";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (testingId !== account.id) {
+                      e.currentTarget.style.color = "var(--color-text-secondary)";
+                      e.currentTarget.style.backgroundColor = "transparent";
+                    }
+                  }}
+                >
+                  <Plug size={15} />
+                </button>
+                <button
+                  onClick={() => setEditingAccount(account)}
+                  title={t("settings.editAccount", "Edit account")}
+                  aria-label={t("settings.editAccount", "Edit account")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    padding: "6px",
+                    borderRadius: "6px",
+                    border: "none",
+                    backgroundColor: "transparent",
+                    color: "var(--color-text-secondary)",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = "var(--color-accent)";
+                    e.currentTarget.style.backgroundColor = "var(--color-bg-hover)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = "var(--color-text-secondary)";
+                    e.currentTarget.style.backgroundColor = "transparent";
+                  }}
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  onClick={() => setDeleteTarget({ id: account.id, email: account.email })}
+                  title={t("settings.removeAccount")}
+                  aria-label={t("settings.removeAccount")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    padding: "6px",
+                    borderRadius: "6px",
+                    border: "none",
+                    backgroundColor: "transparent",
+                    color: "var(--color-text-secondary)",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = "#ef4444";
+                    e.currentTarget.style.backgroundColor = "rgba(239,68,68,0.08)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = "var(--color-text-secondary)";
+                    e.currentTarget.style.backgroundColor = "transparent";
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Test result */}
+      {testResult && (
+        <div
+          style={{
+            marginTop: "10px",
+            padding: "10px 12px",
+            borderRadius: "6px",
+            backgroundColor: testResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
+            border: `1px solid ${testResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+            color: testResult.ok ? "#22c55e" : "#ef4444",
+            fontSize: "12px",
+            whiteSpace: "pre-wrap",
+            fontFamily: "monospace",
+            lineHeight: 1.5,
+          }}
+        >
+          {testResult.message}
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {deleteTarget && (
+        <ConfirmDialog
+          title={t("settings.removeAccount", "Remove Account")}
+          message={t("settings.confirmDeleteAccount", { email: deleteTarget.email })}
+          destructive
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            doDelete(deleteTarget.id);
+            setDeleteTarget(null);
+          }}
+        />
+      )}
+
+      {/* AccountSetup modal */}
+      {showSetup && <AccountSetup onClose={() => setShowSetup(false)} />}
+
+      {/* Edit account modal */}
+      {editingAccount && (
+        <EditAccountModal
+          account={editingAccount}
+          onClose={() => setEditingAccount(null)}
+          onSaved={async () => {
+            setEditingAccount(null);
+            await queryClient.invalidateQueries({ queryKey: accountsQueryKey });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditAccountModal({ account, onClose, onSaved }: {
+  account: Account;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  const [displayName, setDisplayName] = useState(account.display_name);
+  const [email, setEmail] = useState(account.email);
+  const [password, setPassword] = useState("");
+  const [imapHost, setImapHost] = useState("");
+  const [imapPort, setImapPort] = useState("");
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("");
+  const [imapSecurity, setImapSecurity] = useState<ConnectionSecurity | "">("");
+  const [smtpSecurity, setSmtpSecurity] = useState<ConnectionSecurity | "">("");
+  const [proxyHost, setProxyHost] = useState("");
+  const [proxyPort, setProxyPort] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await updateAccount(
+        account.id,
+        email,
+        displayName,
+        password || undefined,
+        imapHost || undefined,
+        imapPort ? parseInt(imapPort, 10) : undefined,
+        smtpHost || undefined,
+        smtpPort ? parseInt(smtpPort, 10) : undefined,
+        imapSecurity || undefined,
+        smtpSecurity || undefined,
+        proxyHost || undefined,
+        proxyPort ? parseInt(proxyPort, 10) : undefined,
+      );
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "7px 10px",
+    borderRadius: "6px",
+    border: "1px solid var(--color-border)",
+    backgroundColor: "var(--color-bg)",
+    color: "var(--color-text-primary)",
+    fontSize: "13px",
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: "block",
+    fontSize: "12px",
+    color: "var(--color-text-secondary)",
+    marginBottom: "4px",
+  };
+
+  const fieldStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        backgroundColor: "rgba(0,0,0,0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        style={{
+          width: "480px",
+          backgroundColor: "var(--color-bg)",
+          borderRadius: "10px",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+          display: "flex",
+          flexDirection: "column",
+          maxHeight: "90vh",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "16px 20px",
+            borderBottom: "1px solid var(--color-border)",
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: "15px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+            {t("settings.editAccount", "Edit Account")}
+          </h2>
+          <button
+            onClick={onClose}
+            aria-label={t("common.close")}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: "4px", borderRadius: "4px", color: "var(--color-text-secondary)", display: "flex" }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: "20px" }}>
+          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>{t("accountSetup.displayName")}</label>
+              <input style={inputStyle} type="text" required value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+            </div>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>{t("accountSetup.emailAddress")}</label>
+              <input style={inputStyle} type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+            </div>
+            <div style={fieldStyle}>
+              <label style={labelStyle}>{t("accountSetup.password")} <span style={{ color: "var(--color-text-secondary)", fontWeight: 400 }}>({t("settings.leaveEmptyKeep", "leave empty to keep current")})</span></label>
+              <input style={inputStyle} type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: "12px" }}>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.imapHost")} <span style={{ color: "var(--color-text-secondary)", fontWeight: 400 }}>({t("settings.optional", "optional")})</span></label>
+                <input style={inputStyle} type="text" value={imapHost} onChange={(e) => setImapHost(e.target.value)} placeholder={t("settings.leaveEmptyKeep")} />
+              </div>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.imapPort")}</label>
+                <input style={{ ...inputStyle, width: "70px" }} type="number" value={imapPort} onChange={(e) => setImapPort(e.target.value)} />
+              </div>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.security", "Security")}</label>
+                <select value={imapSecurity} onChange={(e) => setImapSecurity(e.target.value as ConnectionSecurity | "")} style={{ ...inputStyle, width: "110px" }}>
+                  <option value="">{t("settings.leaveEmptyKeep", "keep current")}</option>
+                  <option value="tls">{t("accountSetup.securityTls", "SSL/TLS")}</option>
+                  <option value="starttls">{t("accountSetup.securityStarttls", "STARTTLS")}</option>
+                  <option value="plain">{t("accountSetup.securityPlain", "None")}</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: "12px" }}>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.smtpHost")} <span style={{ color: "var(--color-text-secondary)", fontWeight: 400 }}>({t("settings.optional", "optional")})</span></label>
+                <input style={inputStyle} type="text" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder={t("settings.leaveEmptyKeep")} />
+              </div>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.smtpPort")}</label>
+                <input style={{ ...inputStyle, width: "70px" }} type="number" value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} />
+              </div>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.security", "Security")}</label>
+                <select value={smtpSecurity} onChange={(e) => setSmtpSecurity(e.target.value as ConnectionSecurity | "")} style={{ ...inputStyle, width: "110px" }}>
+                  <option value="">{t("settings.leaveEmptyKeep", "keep current")}</option>
+                  <option value="tls">{t("accountSetup.securityTls", "SSL/TLS")}</option>
+                  <option value="starttls">{t("accountSetup.securityStarttls", "STARTTLS")}</option>
+                  <option value="plain">{t("accountSetup.securityPlain", "None")}</option>
+                </select>
+              </div>
+            </div>
+
+            {/* SOCKS5 Proxy */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "12px" }}>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.proxyHost", "SOCKS5 Proxy")} <span style={{ color: "var(--color-text-secondary)", fontWeight: 400 }}>({t("settings.optional", "optional")})</span></label>
+                <input style={inputStyle} type="text" value={proxyHost} onChange={(e) => setProxyHost(e.target.value)} placeholder="127.0.0.1" />
+              </div>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t("accountSetup.proxyPort", "Port")}</label>
+                <input style={{ ...inputStyle, width: "80px" }} type="number" value={proxyPort} onChange={(e) => setProxyPort(e.target.value)} placeholder="7890" />
+              </div>
+            </div>
+
+            {error && (
+              <div style={{ padding: "10px 12px", borderRadius: "6px", backgroundColor: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444", fontSize: "13px" }}>
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              style={{
+                padding: "9px 16px",
+                borderRadius: "6px",
+                border: "none",
+                backgroundColor: "var(--color-accent)",
+                color: "#fff",
+                fontSize: "13px",
+                fontWeight: 600,
+                cursor: loading ? "not-allowed" : "pointer",
+                opacity: loading ? 0.7 : 1,
+                marginTop: "4px",
+              }}
+            >
+              {loading ? t("common.saving") : t("common.save")}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}

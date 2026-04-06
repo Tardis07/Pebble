@@ -1,12 +1,17 @@
-import { useState } from "react";
-import { Star, Paperclip } from "lucide-react";
-import type { Message } from "@/lib/api";
-import { updateMessageFlags } from "@/lib/api";
+import { memo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Star, Paperclip, Archive, LayoutGrid } from "lucide-react";
+import type { MessageSummary } from "@/lib/api";
+import { updateMessageFlags, archiveMessage, getMessageLabels } from "@/lib/api";
+import { useKanbanStore } from "@/stores/kanban.store";
+import { useToastStore } from "@/stores/toast.store";
 
 interface Props {
-  message: Message;
+  message: MessageSummary;
   isSelected: boolean;
   onClick: () => void;
+  onToggleStar?: (messageId: string, newStarred: boolean) => void;
 }
 
 function formatDate(timestamp: number): string {
@@ -24,13 +29,24 @@ function formatDate(timestamp: number): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export default function MessageItem({ message, isSelected, onClick }: Props) {
-  const [hovered, setHovered] = useState(false);
+function MessageItem({ message, isSelected, onClick, onToggleStar }: Props) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [showActions, setShowActions] = useState(false);
   const fontWeight = message.is_read ? "normal" : "600";
+  const inKanban = useKanbanStore((s) => s.cardIdSet.has(message.id));
+  const { data: labels = [] } = useQuery({
+    queryKey: ["labels", message.id],
+    queryFn: () => getMessageLabels(message.id),
+    staleTime: 60_000,
+  });
 
   return (
     <div
       onClick={onClick}
+      tabIndex={0}
+      role="option"
+      aria-selected={isSelected}
       style={{
         position: "relative",
         backgroundColor: isSelected ? "var(--color-sidebar-active)" : "transparent",
@@ -45,12 +61,29 @@ export default function MessageItem({ message, isSelected, onClick }: Props) {
         transition: "background-color 0.12s ease",
       }}
       onMouseEnter={(e) => {
-        setHovered(true);
+        setShowActions(true);
         if (!isSelected) e.currentTarget.style.backgroundColor = "var(--color-bg-hover)";
       }}
       onMouseLeave={(e) => {
-        setHovered(false);
+        setShowActions(false);
         if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
+      }}
+      onFocus={(e) => {
+        setShowActions(true);
+        if (!isSelected) e.currentTarget.style.backgroundColor = "var(--color-bg-hover)";
+      }}
+      onBlur={(e) => {
+        // Only hide if focus leaves this element entirely (not moving to a child)
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setShowActions(false);
+          if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" }}>
@@ -67,6 +100,9 @@ export default function MessageItem({ message, isSelected, onClick }: Props) {
           {message.from_name || message.from_address}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+          {inKanban && (
+            <LayoutGrid size={13} color="var(--color-accent)" />
+          )}
           {message.is_starred && (
             <Star size={13} fill="#f59e0b" color="#f59e0b" />
           )}
@@ -93,7 +129,7 @@ export default function MessageItem({ message, isSelected, onClick }: Props) {
           marginBottom: "2px",
         }}
       >
-        {message.subject || "(no subject)"}
+        {message.subject || t("inbox.noSubject")}
       </div>
       <div
         style={{
@@ -106,8 +142,28 @@ export default function MessageItem({ message, isSelected, onClick }: Props) {
         }}
       >
         {message.snippet}
+        {labels.length > 0 && labels.map((l) => (
+          <span
+            key={l.id}
+            style={{
+              display: "inline-block",
+              fontSize: "10px",
+              padding: "0 5px",
+              borderRadius: "3px",
+              backgroundColor: l.color + "22",
+              color: l.color,
+              border: `1px solid ${l.color}44`,
+              marginLeft: "6px",
+              verticalAlign: "middle",
+              lineHeight: "16px",
+              fontWeight: 500,
+            }}
+          >
+            {l.name}
+          </span>
+        ))}
       </div>
-      {hovered && (
+      {showActions && (
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
@@ -128,8 +184,70 @@ export default function MessageItem({ message, isSelected, onClick }: Props) {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              updateMessageFlags(message.id, undefined, !message.is_starred);
+              queryClient.setQueriesData<MessageSummary[]>({ queryKey: ["messages"] }, (old) => old?.filter((m) => m.id !== message.id));
+              archiveMessage(message.id)
+                .then((result) => {
+                  if (result === "skipped") return;
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  queryClient.invalidateQueries({ queryKey: ["threads"] });
+                  const msg = result === "unarchived"
+                    ? t("messageActions.unarchiveSuccess", "Message moved to inbox")
+                    : t("messageActions.archiveSuccess", "Message archived");
+                  useToastStore.getState().addToast({ message: msg, type: "success" });
+                })
+                .catch(() => {
+                  queryClient.invalidateQueries({ queryKey: ["messages"] });
+                  useToastStore.getState().addToast({ message: t("messageActions.archiveFailed", "Failed to archive"), type: "error" });
+                });
             }}
+            title={t("messageActions.archive")}
+            style={{
+              padding: "4px",
+              border: "none",
+              background: "transparent",
+              borderRadius: "4px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              color: "var(--color-text-secondary)",
+            }}
+          >
+            <Archive size={14} />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              useKanbanStore.getState().addCard(message.id, "todo")
+                .then(() => {
+                  useToastStore.getState().addToast({ message: t("messageActions.kanbanSuccess", "Added to kanban board"), type: "success" });
+                })
+                .catch(() => {
+                  useToastStore.getState().addToast({ message: t("messageActions.kanbanFailed", "Failed to add to kanban"), type: "error" });
+                });
+            }}
+            title={t("messageActions.addToKanban")}
+            style={{
+              padding: "4px",
+              border: "none",
+              background: "transparent",
+              borderRadius: "4px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              color: "var(--color-text-secondary)",
+            }}
+          >
+            <LayoutGrid size={14} />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              updateMessageFlags(message.id, undefined, !message.is_starred)
+                .then(() => queryClient.invalidateQueries({ queryKey: ["messages"] }))
+                .catch(console.error);
+              if (onToggleStar) onToggleStar(message.id, !message.is_starred);
+            }}
+            title={message.is_starred ? t("messageActions.unstar") : t("messageActions.star")}
             style={{
               padding: "4px",
               border: "none",
@@ -152,3 +270,5 @@ export default function MessageItem({ message, isSelected, onClick }: Props) {
     </div>
   );
 }
+
+export default memo(MessageItem);

@@ -2,9 +2,11 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { RefreshCw } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useUIStore } from "../stores/ui.store";
 import { useMailStore } from "@/stores/mail.store";
-import { startSync, stopSync } from "@/lib/api";
+import { stopSync } from "@/lib/api";
+import { useSyncMutation } from "@/hooks/mutations/useSyncMutation";
 import { retryQueue } from "../lib/retry-queue";
 
 interface MailErrorPayload {
@@ -21,6 +23,8 @@ export default function StatusBar() {
   const lastMailError = useUIStore((s) => s.lastMailError);
   const setLastMailError = useUIStore((s) => s.setLastMailError);
   const activeAccountId = useMailStore((s) => s.activeAccountId);
+  const syncMutation = useSyncMutation();
+  const queryClient = useQueryClient();
 
   // Listen for mail:error events from Rust backend
   useEffect(() => {
@@ -34,6 +38,26 @@ export default function StatusBar() {
     };
   }, [setLastMailError]);
 
+  // Listen for sync-complete: set idle + refresh data
+  useEffect(() => {
+    const unlisten = listen("mail:sync-complete", () => {
+      setSyncStatus("idle");
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      queryClient.invalidateQueries({ queryKey: ["threads"] });
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [setSyncStatus, queryClient]);
+
+  // Listen for new mail events: incremental data refresh
+  useEffect(() => {
+    const unlisten = listen("mail:new", () => {
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      queryClient.invalidateQueries({ queryKey: ["threads"] });
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [queryClient]);
+
   // Pause/resume retry queue based on network status
   useEffect(() => {
     if (networkStatus === "offline") {
@@ -46,18 +70,15 @@ export default function StatusBar() {
   async function handleSync() {
     if (!activeAccountId) return;
     if (syncStatus === "syncing") {
-      try {
-        await stopSync(activeAccountId);
-      } catch {}
+      try { await stopSync(activeAccountId); } catch {}
       setSyncStatus("idle");
     } else {
       setSyncStatus("syncing");
       try {
-        await startSync(activeAccountId);
+        await syncMutation.mutateAsync(activeAccountId);
+        // Don't set idle here — wait for mail:sync-complete event
       } catch {
         setSyncStatus("error");
-      } finally {
-        setSyncStatus("idle");
       }
     }
   }

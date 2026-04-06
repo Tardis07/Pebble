@@ -1,13 +1,16 @@
 import { useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Message } from "@/lib/api";
+import type { MessageSummary } from "@/lib/api";
 import MessageItem from "./MessageItem";
+import { MessageListSkeleton } from "./Skeleton";
 
 interface Props {
-  messages: Message[];
+  messages: MessageSummary[];
   selectedMessageId: string | null;
   onSelectMessage: (id: string) => void;
   loading: boolean;
+  onToggleStar?: (messageId: string, newStarred: boolean) => void;
 }
 
 export default function MessageList({
@@ -15,7 +18,9 @@ export default function MessageList({
   selectedMessageId,
   onSelectMessage,
   loading,
+  onToggleStar,
 }: Props) {
+  const { t } = useTranslation();
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -25,25 +30,13 @@ export default function MessageList({
   });
 
   if (loading) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-          color: "var(--color-text-secondary)",
-          fontSize: "14px",
-        }}
-      >
-        Loading...
-      </div>
-    );
+    return <MessageListSkeleton />;
   }
 
   if (messages.length === 0) {
     return (
       <div
+        className="fade-in"
         style={{
           display: "flex",
           alignItems: "center",
@@ -53,7 +46,7 @@ export default function MessageList({
           fontSize: "14px",
         }}
       >
-        No messages
+        {t("common.noMessages")}
       </div>
     );
   }
@@ -89,6 +82,7 @@ export default function MessageList({
                 message={message}
                 isSelected={message.id === selectedMessageId}
                 onClick={() => onSelectMessage(message.id)}
+                onToggleStar={onToggleStar}
               />
             </div>
           );

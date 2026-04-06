@@ -10,13 +10,17 @@ import {
   LayoutGrid,
   Settings,
   Search,
-  PenLine,
+  Clock,
+  Star,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useUIStore } from "../stores/ui.store";
 import { useMailStore } from "../stores/mail.store";
 import { useAccountsQuery, useFoldersQuery } from "../hooks/queries";
-import type { Folder as FolderType } from "../lib/api";
+import type { Account, Folder as FolderType } from "../lib/api";
+
+const EMPTY_ACCOUNTS: Account[] = [];
+const EMPTY_FOLDERS: FolderType[] = [];
 
 const ROLE_ICONS: Record<string, React.ReactNode> = {
   inbox: <Inbox size={16} />,
@@ -43,8 +47,9 @@ const DEFAULT_FOLDERS: { role: string; labelKey: string }[] = [
 
 export default function Sidebar() {
   const { t } = useTranslation();
-  const { activeView, setActiveView, sidebarCollapsed } = useUIStore();
-  const openCompose = useUIStore((s) => s.openCompose);
+  const activeView = useUIStore((s) => s.activeView);
+  const setActiveView = useUIStore((s) => s.setActiveView);
+  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const {
     activeFolderId,
     activeAccountId,
@@ -52,10 +57,39 @@ export default function Sidebar() {
     setActiveFolderId,
   } = useMailStore();
 
-  const { data: accounts = [] } = useAccountsQuery();
-  const { data: folders = [] } = useFoldersQuery(activeAccountId);
+  const { data: accounts = EMPTY_ACCOUNTS } = useAccountsQuery();
+  const { data: folders = EMPTY_FOLDERS } = useFoldersQuery(activeAccountId);
+
+  const ROLE_LABELS: Record<string, string> = {
+    inbox: t("sidebar.inbox"),
+    sent: t("sidebar.sent"),
+    drafts: t("sidebar.drafts"),
+    trash: t("sidebar.trash"),
+    archive: t("sidebar.archive"),
+    spam: t("sidebar.spam"),
+  };
+  const folderLabel = (folder: FolderType) => (folder.role && ROLE_LABELS[folder.role]) || folder.name;
 
   const hasRealFolders = folders.length > 0;
+
+  // Deduplicate folders by role, insert archive after sent
+  const dedupedFolders = (() => {
+    const seenRoles = new Set<string>();
+    const result = folders.filter((f) => {
+      if (f.role === "archive") return false; // inserted manually after sent
+      if (!f.role) return true;
+      if (seenRoles.has(f.role)) return false;
+      seenRoles.add(f.role);
+      return true;
+    });
+    // Insert archive folder after "sent"
+    const archiveFolder = folders.find((f) => f.role === "archive");
+    if (archiveFolder) {
+      const sentIdx = result.findIndex((f) => f.role === "sent");
+      result.splice(sentIdx >= 0 ? sentIdx + 1 : result.length, 0, archiveFolder);
+    }
+    return result;
+  })();
 
   // Auto-select first account
   useEffect(() => {
@@ -106,21 +140,8 @@ export default function Sidebar() {
         overflow: "hidden",
       }}
     >
-      {/* Compose + Search buttons */}
+      {/* Search button */}
       <nav style={{ padding: "8px 6px 0", display: "flex", flexDirection: "column", gap: "1px" }}>
-        <SidebarButton
-          icon={<PenLine size={16} />}
-          label={t("sidebar.compose", "Compose")}
-          isActive={false}
-          collapsed={sidebarCollapsed}
-          style={{
-            ...buttonBase,
-            backgroundColor: "var(--color-accent)",
-            color: "#fff",
-            marginBottom: "4px",
-          }}
-          onClick={() => openCompose("new")}
-        />
         <SidebarButton
           icon={<Search size={16} />}
           label={t("search.title", "Search")}
@@ -187,31 +208,63 @@ export default function Sidebar() {
         }}
       >
         {hasRealFolders
-          ? folders.map((folder) => {
+          ? dedupedFolders.flatMap((folder) => {
+              const items: React.ReactNode[] = [];
+              if (folder.role === "drafts") {
+                items.push(
+                  <SidebarButton
+                    key="__starred__"
+                    icon={<Star size={16} />}
+                    label={t("sidebar.starred", "Starred")}
+                    isActive={activeView === "starred"}
+                    collapsed={sidebarCollapsed}
+                    style={buttonBase}
+                    onClick={() => setActiveView("starred")}
+                  />
+                );
+              }
               const isActive = folder.id === activeFolderId && activeView === "inbox";
-              return (
+              items.push(
                 <SidebarButton
                   key={folder.id}
                   icon={folderIcon(folder.role)}
-                  label={folder.name}
+                  label={folderLabel(folder)}
                   isActive={isActive}
                   collapsed={sidebarCollapsed}
                   style={buttonBase}
                   onClick={() => handleFolderClick(folder.id)}
                 />
               );
+              return items;
             })
-          : DEFAULT_FOLDERS.map((df, index) => (
-              <SidebarButton
-                key={df.role}
-                icon={ROLE_ICONS[df.role] || <Folder size={16} />}
-                label={t(df.labelKey)}
-                isActive={index === 0 && activeView === "inbox"}
-                collapsed={sidebarCollapsed}
-                style={buttonBase}
-                onClick={() => setActiveView("inbox")}
-              />
-            ))}
+          : DEFAULT_FOLDERS.flatMap((df, index) => {
+              const items: React.ReactNode[] = [];
+              if (df.role === "drafts") {
+                items.push(
+                  <SidebarButton
+                    key="__starred__"
+                    icon={<Star size={16} />}
+                    label={t("sidebar.starred", "Starred")}
+                    isActive={activeView === "starred"}
+                    collapsed={sidebarCollapsed}
+                    style={buttonBase}
+                    onClick={() => setActiveView("starred")}
+                  />
+                );
+              }
+              items.push(
+                <SidebarButton
+                  key={df.role}
+                  icon={ROLE_ICONS[df.role] || <Folder size={16} />}
+                  label={t(df.labelKey)}
+                  isActive={index === 0 && activeView === "inbox"}
+                  collapsed={sidebarCollapsed}
+                  style={buttonBase}
+                  onClick={() => setActiveView("inbox")}
+                />
+              );
+              return items;
+            })}
       </nav>
 
       {/* Divider */}
@@ -223,7 +276,7 @@ export default function Sidebar() {
         }}
       />
 
-      {/* Bottom nav: Kanban + Settings */}
+      {/* Bottom nav: Snoozed + Kanban + Settings */}
       <nav
         style={{
           padding: "6px 6px 8px",
@@ -232,6 +285,14 @@ export default function Sidebar() {
           gap: "1px",
         }}
       >
+        <SidebarButton
+          icon={<Clock size={16} />}
+          label={t("sidebar.snoozed", "Snoozed")}
+          isActive={activeView === "snoozed"}
+          collapsed={sidebarCollapsed}
+          style={buttonBase}
+          onClick={() => setActiveView("snoozed")}
+        />
         <SidebarButton
           icon={<LayoutGrid size={16} />}
           label={t("sidebar.kanban", "Kanban")}

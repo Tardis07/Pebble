@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Message } from "@/lib/api";
 
-export type ActiveView = "inbox" | "kanban" | "settings" | "search";
+export type ActiveView = "inbox" | "kanban" | "settings" | "search" | "snoozed" | "starred" | "compose";
 export type Theme = "light" | "dark" | "system";
 export type Language = "en" | "zh";
 export type NetworkStatus = "online" | "offline";
@@ -14,9 +14,11 @@ interface UIState {
   syncStatus: "idle" | "syncing" | "error";
   networkStatus: NetworkStatus;
   lastMailError: string | null;
-  composeOpen: boolean;
-  composeMode: "new" | "reply" | "forward" | null;
+  previousView: ActiveView;
+  composeMode: "new" | "reply" | "reply-all" | "forward" | null;
   composeReplyTo: Message | null;
+  composeDirty: boolean;
+  setComposeDirty: (dirty: boolean) => void;
   toggleSidebar: () => void;
   setActiveView: (view: ActiveView) => void;
   setTheme: (theme: Theme) => void;
@@ -24,8 +26,10 @@ interface UIState {
   setSyncStatus: (status: "idle" | "syncing" | "error") => void;
   setNetworkStatus: (status: NetworkStatus) => void;
   setLastMailError: (error: string | null) => void;
-  openCompose: (mode: "new" | "reply" | "forward", replyTo?: Message | null) => void;
+  openCompose: (mode: "new" | "reply" | "reply-all" | "forward", replyTo?: Message | null) => void;
   closeCompose: () => void;
+  pollInterval: number;
+  setPollInterval: (secs: number) => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
 }
@@ -33,18 +37,31 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   sidebarCollapsed: false,
   activeView: "inbox",
-  theme: "light",
+  theme: (localStorage.getItem("pebble-theme") as Theme) || "light",
   language: (localStorage.getItem("pebble-language") as Language) || "en",
   syncStatus: "idle",
   networkStatus: "online",
   lastMailError: null,
-  composeOpen: false,
+  previousView: "inbox",
   composeMode: null,
   composeReplyTo: null,
+  composeDirty: false,
+  setComposeDirty: (dirty) => set({ composeDirty: dirty }),
   toggleSidebar: () =>
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
-  setActiveView: (view) => set({ activeView: view }),
-  setTheme: (theme) => set({ theme }),
+  setActiveView: (view) => {
+    const state = useUIStore.getState();
+    // Guard: if leaving compose with unsaved content, confirm first
+    if (state.activeView === "compose" && state.composeDirty && view !== "compose") {
+      // eslint-disable-next-line no-restricted-globals
+      if (!confirm("You have an unsaved draft. Discard and leave?")) return;
+    }
+    set({ activeView: view, ...(state.activeView === "compose" ? { composeDirty: false } : {}) });
+  },
+  setTheme: (theme) => {
+    localStorage.setItem("pebble-theme", theme);
+    set({ theme });
+  },
   setLanguage: (lang) => {
     import("@/lib/i18n").then((mod) => mod.default.changeLanguage(lang));
     localStorage.setItem("pebble-language", lang);
@@ -54,9 +71,24 @@ export const useUIStore = create<UIState>((set) => ({
   setNetworkStatus: (status) => set({ networkStatus: status }),
   setLastMailError: (error) => set({ lastMailError: error }),
   openCompose: (mode, replyTo = null) =>
-    set({ composeOpen: true, composeMode: mode, composeReplyTo: replyTo }),
+    set((state) => ({
+      previousView: state.activeView === "compose" ? state.previousView : state.activeView,
+      activeView: "compose" as ActiveView,
+      composeMode: mode,
+      composeReplyTo: replyTo,
+    })),
   closeCompose: () =>
-    set({ composeOpen: false, composeMode: null, composeReplyTo: null }),
+    set((state) => ({
+      activeView: state.previousView,
+      composeMode: null,
+      composeReplyTo: null,
+      composeDirty: false,
+    })),
+  pollInterval: Number(localStorage.getItem("pebble-poll-interval")) || 15,
+  setPollInterval: (secs) => {
+    localStorage.setItem("pebble-poll-interval", String(secs));
+    set({ pollInterval: secs });
+  },
   searchQuery: "",
   setSearchQuery: (q) => set({ searchQuery: q }),
 }));

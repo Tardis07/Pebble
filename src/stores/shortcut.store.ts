@@ -22,12 +22,13 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   "prev-message": "K",
   "open-message": "Enter",
   "toggle-star": "S",
+  "archive-message": "E",
   "compose-new": "C",
   "reply": "R",
   "toggle-view-inbox": "Ctrl+Shift+I",
   "toggle-view-kanban": "Ctrl+Shift+K",
   "open-search": "Ctrl+Shift+F",
-  "backup-to-cloud": "Ctrl+Shift+B",
+  "open-cloud-settings": "Ctrl+Shift+B",
   "toggle-notifications": "Ctrl+Shift+N",
 };
 

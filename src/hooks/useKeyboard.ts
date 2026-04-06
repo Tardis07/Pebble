@@ -3,7 +3,11 @@ import { useShortcutStore } from "@/stores/shortcut.store";
 import { useCommandStore } from "@/stores/command.store";
 import { useUIStore } from "@/stores/ui.store";
 import { useMailStore } from "@/stores/mail.store";
-import { updateMessageFlags } from "@/lib/api";
+import { useToastStore } from "@/stores/toast.store";
+import { updateMessageFlags, archiveMessage, getMessage } from "@/lib/api";
+import { queryClient } from "@/lib/query-client";
+import type { MessageSummary, ThreadSummary } from "@/lib/api";
+import i18n from "@/lib/i18n";
 
 function eventToKeyString(e: KeyboardEvent): string {
   const parts: string[] = [];
@@ -18,6 +22,24 @@ function eventToKeyString(e: KeyboardEvent): string {
 }
 
 export { eventToKeyString };
+
+/** Read the first matching cached messages from React Query */
+function getCachedMessages(): MessageSummary[] {
+  const entries = queryClient.getQueriesData<MessageSummary[]>({ queryKey: ["messages"] });
+  for (const [, data] of entries) {
+    if (data && data.length > 0) return data;
+  }
+  return [];
+}
+
+/** Read the first matching cached threads from React Query */
+function getCachedThreads(): ThreadSummary[] {
+  const entries = queryClient.getQueriesData<ThreadSummary[]>({ queryKey: ["threads"] });
+  for (const [, data] of entries) {
+    if (data && data.length > 0) return data;
+  }
+  return [];
+}
 
 export function useKeyboard() {
   useEffect(() => {
@@ -56,6 +78,8 @@ export function useKeyboard() {
         case "close-modal":
           if (useCommandStore.getState().isOpen) {
             useCommandStore.getState().close();
+          } else if (useUIStore.getState().activeView === "compose") {
+            useUIStore.getState().closeCompose();
           }
           break;
         case "toggle-view-inbox":
@@ -65,26 +89,89 @@ export function useKeyboard() {
           useUIStore.getState().setActiveView("kanban");
           break;
         case "toggle-star": {
-          const { selectedMessageId, messages } = useMailStore.getState();
+          const { selectedMessageId } = useMailStore.getState();
           if (selectedMessageId) {
+            const messages = getCachedMessages();
             const msg = messages.find((m) => m.id === selectedMessageId);
-            if (msg) updateMessageFlags(selectedMessageId, undefined, !msg.is_starred);
+            if (msg) {
+              const newStarred = !msg.is_starred;
+              // Optimistic update in React Query cache
+              queryClient.setQueriesData<MessageSummary[]>(
+                { queryKey: ["messages"] },
+                (old) => old?.map((m) =>
+                  m.id === selectedMessageId ? { ...m, is_starred: newStarred } : m,
+                ),
+              );
+              updateMessageFlags(selectedMessageId, undefined, newStarred)
+                .then(() => queryClient.invalidateQueries({ queryKey: ["messages"] }))
+                .catch(() => {
+                  // Rollback on error
+                  queryClient.setQueriesData<MessageSummary[]>(
+                    { queryKey: ["messages"] },
+                    (old) => old?.map((m) =>
+                      m.id === selectedMessageId ? { ...m, is_starred: !newStarred } : m,
+                    ),
+                  );
+                });
+            }
+          }
+          break;
+        }
+        case "archive-message": {
+          const { selectedMessageId } = useMailStore.getState();
+          if (selectedMessageId) {
+            // Optimistic removal from React Query cache
+            queryClient.setQueriesData<MessageSummary[]>(
+              { queryKey: ["messages"] },
+              (old) => old?.filter((m) => m.id !== selectedMessageId),
+            );
+            useMailStore.getState().setSelectedMessage(null);
+            archiveMessage(selectedMessageId)
+              .then((result) => {
+                if (result === "skipped") return;
+                queryClient.invalidateQueries({ queryKey: ["messages"] });
+                queryClient.invalidateQueries({ queryKey: ["threads"] });
+                const msg = result === "unarchived" ? i18n.t("messageActions.unarchiveSuccess", "Message moved to inbox") : i18n.t("messageActions.archiveSuccess", "Message archived");
+                useToastStore.getState().addToast({ message: msg, type: "success" });
+              })
+              .catch(() => {
+                queryClient.invalidateQueries({ queryKey: ["messages"] });
+                useToastStore.getState().addToast({ message: i18n.t("messageActions.archiveFailed", "Failed to archive"), type: "error" });
+              });
           }
           break;
         }
         case "next-message": {
-          const { selectedMessageId, messages } = useMailStore.getState();
-          const idx = messages.findIndex((m) => m.id === selectedMessageId);
-          if (idx < messages.length - 1) {
-            useMailStore.getState().setSelectedMessage(messages[idx + 1].id);
+          const state = useMailStore.getState();
+          if (state.threadView) {
+            const threads = getCachedThreads();
+            const idx = threads.findIndex((t) => t.thread_id === state.selectedThreadId);
+            if (idx < threads.length - 1) {
+              state.setSelectedThreadId(threads[idx + 1].thread_id);
+            }
+          } else {
+            const messages = getCachedMessages();
+            const idx = messages.findIndex((m) => m.id === state.selectedMessageId);
+            if (idx < messages.length - 1) {
+              state.setSelectedMessage(messages[idx + 1].id);
+            }
           }
           break;
         }
         case "prev-message": {
-          const { selectedMessageId, messages } = useMailStore.getState();
-          const idx = messages.findIndex((m) => m.id === selectedMessageId);
-          if (idx > 0) {
-            useMailStore.getState().setSelectedMessage(messages[idx - 1].id);
+          const state = useMailStore.getState();
+          if (state.threadView) {
+            const threads = getCachedThreads();
+            const idx = threads.findIndex((t) => t.thread_id === state.selectedThreadId);
+            if (idx > 0) {
+              state.setSelectedThreadId(threads[idx - 1].thread_id);
+            }
+          } else {
+            const messages = getCachedMessages();
+            const idx = messages.findIndex((m) => m.id === state.selectedMessageId);
+            if (idx > 0) {
+              state.setSelectedMessage(messages[idx - 1].id);
+            }
           }
           break;
         }
@@ -92,39 +179,42 @@ export function useKeyboard() {
           useUIStore.getState().openCompose("new");
           break;
         case "reply": {
-          const { selectedMessageId: selId, messages: msgs } = useMailStore.getState();
+          const { selectedMessageId: selId } = useMailStore.getState();
           if (selId) {
-            const msg = msgs.find((m) => m.id === selId);
-            if (msg) useUIStore.getState().openCompose("reply", msg);
+            getMessage(selId).then((msg) => {
+              if (msg) useUIStore.getState().openCompose("reply", msg);
+            });
           }
           break;
         }
         case "open-message": {
-          const { selectedMessageId: curId, messages: curMsgs } = useMailStore.getState();
-          if (!curId && curMsgs.length > 0) {
-            useMailStore.getState().setSelectedMessage(curMsgs[0].id);
+          const state = useMailStore.getState();
+          if (state.threadView) {
+            if (!state.selectedThreadId) {
+              const threads = getCachedThreads();
+              if (threads.length > 0) {
+                state.setSelectedThreadId(threads[0].thread_id);
+              }
+            }
+          } else {
+            if (!state.selectedMessageId) {
+              const messages = getCachedMessages();
+              if (messages.length > 0) {
+                state.setSelectedMessage(messages[0].id);
+              }
+            }
           }
           break;
         }
         case "open-search":
           useUIStore.getState().setActiveView("search");
           break;
-        case "backup-to-cloud": {
-          const url = localStorage.getItem("pebble-webdav-url") || "";
-          if (url) {
-            import("@/lib/api").then(({ backupToWebdav }) => {
-              const user = localStorage.getItem("pebble-webdav-user") || "";
-              const pass = localStorage.getItem("pebble-webdav-pass") || "";
-              backupToWebdav(url, user, pass).catch(console.error);
-            });
-          } else {
-            useUIStore.getState().setActiveView("settings");
-          }
+        case "open-cloud-settings":
+          useUIStore.getState().setActiveView("settings");
           break;
-        }
         case "toggle-notifications": {
           const key = "pebble-notifications-enabled";
-          const cur = localStorage.getItem(key) !== "false";
+          const cur = localStorage.getItem(key) === "true";
           localStorage.setItem(key, String(!cur));
           break;
         }

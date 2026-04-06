@@ -1,6 +1,9 @@
+use pebble_crypto::CryptoService;
 use pebble_search::TantivySearch;
 use pebble_store::Store;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex};
 
@@ -12,19 +15,31 @@ pub struct SyncHandle {
 pub struct AppState {
     pub store: Arc<Store>,
     pub search: Arc<TantivySearch>,
+    pub crypto: Arc<CryptoService>,
     pub sync_handles: Mutex<HashMap<String, SyncHandle>>,
     /// Kept alive so the snooze watcher's `stop_rx` remains open.
     #[allow(dead_code)]
-    pub snooze_stop_tx: watch::Sender<bool>,
+    pub snooze_stop_tx: std::sync::mpsc::Sender<()>,
+    pub attachments_dir: PathBuf,
+    pub notifications_enabled: Arc<AtomicBool>,
 }
 
 impl AppState {
-    pub fn new(store: Store, search: TantivySearch, snooze_stop_tx: watch::Sender<bool>) -> Self {
+    pub fn new(
+        store: Store,
+        search: TantivySearch,
+        crypto: CryptoService,
+        snooze_stop_tx: std::sync::mpsc::Sender<()>,
+        attachments_dir: PathBuf,
+    ) -> Self {
         Self {
             store: Arc::new(store),
             search: Arc::new(search),
+            crypto: Arc::new(crypto),
             sync_handles: Mutex::new(HashMap::new()),
             snooze_stop_tx,
+            attachments_dir,
+            notifications_enabled: Arc::new(AtomicBool::new(true)),
         }
     }
 }

@@ -7,25 +7,23 @@ use state::AppState;
 use std::path::PathBuf;
 use tauri::Manager;
 
-fn get_db_path(app: &tauri::App) -> PathBuf {
+fn get_db_path(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let app_data = app
         .path()
-        .app_data_dir()
-        .expect("Failed to get app data directory");
-    std::fs::create_dir_all(&app_data).expect("Failed to create app data directory");
+        .app_data_dir()?;
+    std::fs::create_dir_all(&app_data)?;
     let db_dir = app_data.join("db");
-    std::fs::create_dir_all(&db_dir).expect("Failed to create db directory");
-    db_dir.join("pebble.db")
+    std::fs::create_dir_all(&db_dir)?;
+    Ok(db_dir.join("pebble.db"))
 }
 
-fn get_index_path(app: &tauri::App) -> PathBuf {
+fn get_index_path(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let app_data = app
         .path()
-        .app_data_dir()
-        .expect("Failed to get app data directory");
+        .app_data_dir()?;
     let index_dir = app_data.join("search_index");
-    std::fs::create_dir_all(&index_dir).expect("Failed to create search index directory");
-    index_dir
+    std::fs::create_dir_all(&index_dir)?;
+    Ok(index_dir)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -33,56 +31,85 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "pebble=debug,pebble_store=debug,pebble_mail=debug,pebble_search=debug".into()
+                "pebble=debug,pebble_store=debug,pebble_mail=debug,pebble_search=debug,pebble_translate=debug,pebble_crypto=debug,pebble_oauth=debug".into()
             }),
         )
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let db_path = get_db_path(app);
+            let db_path = get_db_path(app)?;
             tracing::info!("Database path: {}", db_path.display());
-            let store =
-                pebble_store::Store::open(&db_path).expect("Failed to open database");
+            let store = pebble_store::Store::open(&db_path)?;
             tracing::info!("Database initialized successfully");
 
-            let index_path = get_index_path(app);
+            let index_path = get_index_path(app)?;
             tracing::info!("Search index path: {}", index_path.display());
-            let search = pebble_search::TantivySearch::open(&index_path)
-                .expect("Failed to open search index");
+            let search = pebble_search::TantivySearch::open(&index_path)?;
             tracing::info!("Search index initialized successfully");
 
-            let (snooze_stop_tx, snooze_stop_rx) = tokio::sync::watch::channel(false);
-            app.manage(AppState::new(store, search, snooze_stop_tx));
+            let crypto = pebble_crypto::CryptoService::init()?;
+            tracing::info!("Crypto service initialized successfully");
 
-            // Start snooze watcher
+            let app_data = app
+                .path()
+                .app_data_dir()?;
+            let attachments_dir = app_data.join("attachments");
+            std::fs::create_dir_all(&attachments_dir)?;
+            tracing::info!("Attachments directory: {}", attachments_dir.display());
+
+            let (snooze_stop_tx, snooze_stop_rx) = std::sync::mpsc::channel::<()>();
+            app.manage(AppState::new(store, search, crypto, snooze_stop_tx, attachments_dir));
+
+            // Start snooze watcher on the Tauri async runtime
             let state: tauri::State<AppState> = app.state();
             let store_clone = state.store.clone();
             let app_handle = app.handle().clone();
-            tokio::spawn(snooze_watcher::run_snooze_watcher(
+            tauri::async_runtime::spawn(snooze_watcher::run_snooze_watcher(
                 store_clone,
-                app_handle,
+                app_handle.clone(),
                 snooze_stop_rx,
             ));
+
+            // Auto-resume sync for all existing accounts
+            tauri::async_runtime::spawn(async move {
+                commands::sync_cmd::resume_all_syncs(app_handle).await;
+            });
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::health::health_check,
             commands::accounts::add_account,
+            commands::accounts::update_account,
             commands::accounts::list_accounts,
             commands::accounts::delete_account,
+            commands::accounts::test_imap_connection,
+            commands::accounts::test_account_connection,
             commands::folders::list_folders,
             commands::messages::list_messages,
+            commands::messages::list_starred_messages,
             commands::messages::get_message,
+            commands::messages::get_messages_batch,
             commands::messages::get_rendered_html,
+            commands::messages::get_message_with_html,
             commands::messages::update_message_flags,
+            commands::messages::is_trusted_sender,
+            commands::messages::archive_message,
+            commands::messages::delete_message,
+            commands::messages::restore_message,
+            commands::messages::empty_trash,
             commands::search::search_messages,
             commands::sync_cmd::start_sync,
             commands::sync_cmd::stop_sync,
             commands::kanban::move_to_kanban,
             commands::kanban::list_kanban_cards,
             commands::kanban::remove_from_kanban,
+            commands::labels::get_message_labels,
+            commands::labels::add_message_label,
+            commands::labels::remove_message_label,
+            commands::labels::list_labels,
             commands::snooze::snooze_message,
             commands::snooze::unsnooze_message,
             commands::snooze::list_snoozed,
@@ -92,6 +119,26 @@ pub fn run() {
             commands::rules::delete_rule,
             commands::compose::send_email,
             commands::trusted_senders::trust_sender,
+            commands::trusted_senders::list_trusted_senders,
+            commands::trusted_senders::remove_trusted_sender,
+            commands::translate::translate_text,
+            commands::translate::get_translate_config,
+            commands::translate::save_translate_config,
+            commands::translate::test_translate_connection,
+            commands::threads::list_thread_messages,
+            commands::threads::list_threads,
+            commands::oauth::start_oauth_flow,
+            commands::oauth::complete_oauth_flow,
+            commands::attachments::list_attachments,
+            commands::attachments::get_attachment_path,
+            commands::attachments::download_attachment,
+            commands::cloud_sync::test_webdav_connection,
+            commands::cloud_sync::backup_to_webdav,
+            commands::cloud_sync::restore_from_webdav,
+            commands::contacts::search_contacts,
+            commands::advanced_search::advanced_search,
+            commands::sync_cmd::reindex_search,
+            commands::notifications::set_notifications_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

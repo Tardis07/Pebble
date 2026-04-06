@@ -7,12 +7,13 @@ pub async fn move_to_kanban(
     state: State<'_, AppState>,
     message_id: String,
     column: KanbanColumn,
+    position: Option<i32>,
 ) -> std::result::Result<(), PebbleError> {
     let now = now_timestamp();
     let card = KanbanCard {
         message_id,
         column,
-        position: 0,
+        position: position.unwrap_or(0),
         created_at: now,
         updated_at: now,
     };

@@ -10,6 +10,7 @@ pub async fn send_email(
     account_id: String,
     to: Vec<String>,
     cc: Vec<String>,
+    bcc: Vec<String>,
     subject: String,
     body_text: String,
     body_html: Option<String>,
@@ -20,44 +21,32 @@ pub async fn send_email(
         .get_account(&account_id)?
         .ok_or_else(|| PebbleError::Internal(format!("Account not found: {account_id}")))?;
 
-    let sync_state_json = state
+    // Read SMTP config from encrypted auth_data (where add_account stores it)
+    let encrypted = state
         .store
-        .get_account_sync_state(&account_id)?
-        .ok_or_else(|| PebbleError::Internal("No sync state configured".to_string()))?;
+        .get_auth_data(&account_id)?
+        .ok_or_else(|| {
+            PebbleError::Internal(format!("No auth data found for account {account_id}"))
+        })?;
+    let decrypted = state.crypto.decrypt(&encrypted)?;
+    let config: serde_json::Value = serde_json::from_slice(&decrypted)
+        .map_err(|e| PebbleError::Internal(format!("Failed to parse decrypted config: {e}")))?;
 
-    let sync_state: serde_json::Value = serde_json::from_str(&sync_state_json)
-        .map_err(|e| PebbleError::Internal(format!("Invalid sync state JSON: {e}")))?;
+    let smtp_config: pebble_mail::SmtpConfig = serde_json::from_value(
+        config
+            .get("smtp")
+            .cloned()
+            .ok_or_else(|| PebbleError::Internal("No SMTP config in auth data".to_string()))?,
+    )
+    .map_err(|e| PebbleError::Internal(format!("Failed to deserialize SMTP config: {e}")))?;
 
-    let smtp = sync_state
-        .get("smtp")
-        .ok_or_else(|| PebbleError::Internal("No SMTP config in sync state".to_string()))?;
-
-    let smtp_host = smtp
-        .get("host")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| PebbleError::Internal("Missing SMTP host".to_string()))?
-        .to_string();
-    let smtp_port = smtp
-        .get("port")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| PebbleError::Internal("Missing SMTP port".to_string()))?
-        as u16;
-    let smtp_username = smtp
-        .get("username")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| PebbleError::Internal("Missing SMTP username".to_string()))?
-        .to_string();
-    let smtp_password = smtp
-        .get("password")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| PebbleError::Internal("Missing SMTP password".to_string()))?
-        .to_string();
-    let smtp_use_tls = smtp
-        .get("use_tls")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-
-    let sender = SmtpSender::new(smtp_host, smtp_port, smtp_username, smtp_password, smtp_use_tls);
+    let sender = SmtpSender::new(
+        smtp_config.host,
+        smtp_config.port,
+        smtp_config.username,
+        smtp_config.password,
+        smtp_config.security,
+    );
 
     let from_email = account.email.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -65,6 +54,7 @@ pub async fn send_email(
             &from_email,
             &to,
             &cc,
+            &bcc,
             &subject,
             &body_text,
             body_html.as_deref(),

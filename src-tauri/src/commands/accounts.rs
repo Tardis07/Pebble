@@ -1,5 +1,6 @@
 use crate::state::AppState;
 use pebble_core::{Account, PebbleError, ProviderType, new_id, now_timestamp};
+use pebble_mail::ConnectionSecurity;
 use serde::Deserialize;
 use tauri::State;
 
@@ -11,13 +12,16 @@ pub struct AddAccountRequest {
     pub provider: String,
     pub imap_host: String,
     pub imap_port: u16,
-    /// Reserved for future outbound mail support.
     pub smtp_host: String,
-    /// Reserved for future outbound mail support.
     pub smtp_port: u16,
     pub username: String,
     pub password: String,
-    pub use_tls: bool,
+    pub imap_security: ConnectionSecurity,
+    pub smtp_security: ConnectionSecurity,
+    #[serde(default)]
+    pub proxy_host: Option<String>,
+    #[serde(default)]
+    pub proxy_port: Option<u16>,
 }
 
 #[tauri::command]
@@ -43,32 +47,172 @@ pub async fn add_account(
 
     state.store.insert_account(&account)?;
 
-    // Persist IMAP + SMTP config as sync_state JSON
+    // Build proxy config if provided
+    let proxy = match (request.proxy_host, request.proxy_port) {
+        (Some(h), Some(p)) if !h.is_empty() => Some(pebble_mail::ProxyConfig { host: h, port: p }),
+        _ => None,
+    };
+
+    // Build IMAP + SMTP config
     let imap_config = pebble_mail::ImapConfig {
         host: request.imap_host,
         port: request.imap_port,
         username: request.username.clone(),
         password: request.password.clone(),
-        use_tls: request.use_tls,
+        security: request.imap_security,
+        proxy,
     };
     let smtp_config = pebble_mail::SmtpConfig {
         host: request.smtp_host,
         port: request.smtp_port,
         username: request.username,
         password: request.password,
-        use_tls: request.use_tls,
+        security: request.smtp_security,
     };
-    let sync_state = serde_json::json!({
-        "imap": imap_config,
-        "smtp": smtp_config,
-    });
-    let sync_state_json = serde_json::to_string(&sync_state)
-        .map_err(|e| PebbleError::Internal(format!("Failed to serialize sync config: {e}")))?;
+
+    // Encrypt credentials and store as auth_data
+    let config = serde_json::json!({ "imap": imap_config, "smtp": smtp_config });
+    let config_bytes = serde_json::to_vec(&config)
+        .map_err(|e| PebbleError::Internal(format!("Failed to serialize config: {e}")))?;
+    let encrypted = state.crypto.encrypt(&config_bytes)?;
+    state.store.set_auth_data(&account.id, &encrypted)?;
+
+    // Store non-secret metadata in sync_state
+    let metadata = serde_json::json!({ "provider": "imap" });
+    let metadata_json = serde_json::to_string(&metadata)
+        .map_err(|e| PebbleError::Internal(format!("Failed to serialize metadata: {e}")))?;
     state
         .store
-        .update_account_sync_state(&account.id, &sync_state_json)?;
+        .update_account_sync_state(&account.id, &metadata_json)?;
 
     Ok(account)
+}
+
+#[tauri::command]
+pub async fn update_account(
+    state: State<'_, AppState>,
+    account_id: String,
+    email: String,
+    display_name: String,
+    password: Option<String>,
+    imap_host: Option<String>,
+    imap_port: Option<u16>,
+    smtp_host: Option<String>,
+    smtp_port: Option<u16>,
+    imap_security: Option<ConnectionSecurity>,
+    smtp_security: Option<ConnectionSecurity>,
+    proxy_host: Option<String>,
+    proxy_port: Option<u16>,
+) -> std::result::Result<(), PebbleError> {
+    state.store.update_account(&account_id, &email, &display_name)?;
+
+    // Update credentials if any connection fields changed
+    if password.is_some() || imap_host.is_some() || smtp_host.is_some()
+        || imap_port.is_some() || smtp_port.is_some()
+        || imap_security.is_some() || smtp_security.is_some()
+        || proxy_host.is_some() || proxy_port.is_some()
+    {
+        // Read existing config
+        let existing = state.store.get_auth_data(&account_id)?;
+        let mut config: serde_json::Value = if let Some(encrypted) = existing {
+            let decrypted = state.crypto.decrypt(&encrypted)?;
+            serde_json::from_slice(&decrypted)
+                .map_err(|e| PebbleError::Internal(format!("Failed to parse config: {e}")))?
+        } else {
+            serde_json::json!({ "imap": {}, "smtp": {} })
+        };
+
+        // Update IMAP fields
+        if let Some(imap) = config.get_mut("imap") {
+            if let Some(ref h) = imap_host { imap["host"] = serde_json::json!(h); }
+            if let Some(p) = imap_port { imap["port"] = serde_json::json!(p); }
+            if let Some(ref pw) = password { imap["password"] = serde_json::json!(pw); }
+            if let Some(ref sec) = imap_security {
+                imap["security"] = serde_json::to_value(sec).unwrap();
+                if let Some(obj) = imap.as_object_mut() { obj.remove("use_tls"); }
+            }
+            // Update proxy
+            if proxy_host.is_some() || proxy_port.is_some() {
+                match (&proxy_host, &proxy_port) {
+                    (Some(h), Some(p)) if !h.is_empty() => {
+                        imap["proxy"] = serde_json::json!({"host": h, "port": p});
+                    }
+                    _ => {
+                        if let Some(obj) = imap.as_object_mut() { obj.remove("proxy"); }
+                    }
+                }
+            }
+            if imap.get("username").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                imap["username"] = serde_json::json!(email);
+            }
+        }
+        // Update SMTP fields
+        if let Some(smtp) = config.get_mut("smtp") {
+            if let Some(ref h) = smtp_host { smtp["host"] = serde_json::json!(h); }
+            if let Some(p) = smtp_port { smtp["port"] = serde_json::json!(p); }
+            if let Some(ref pw) = password { smtp["password"] = serde_json::json!(pw); }
+            if let Some(ref sec) = smtp_security {
+                smtp["security"] = serde_json::to_value(sec).unwrap();
+                if let Some(obj) = smtp.as_object_mut() { obj.remove("use_tls"); }
+            }
+            if smtp.get("username").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                smtp["username"] = serde_json::json!(email);
+            }
+        }
+
+        let config_bytes = serde_json::to_vec(&config)
+            .map_err(|e| PebbleError::Internal(format!("Failed to serialize config: {e}")))?;
+        let encrypted = state.crypto.encrypt(&config_bytes)?;
+        state.store.set_auth_data(&account_id, &encrypted)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestConnectionRequest {
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub imap_security: ConnectionSecurity,
+    #[serde(default)]
+    pub proxy_host: Option<String>,
+    #[serde(default)]
+    pub proxy_port: Option<u16>,
+}
+
+#[tauri::command]
+pub async fn test_imap_connection(
+    request: TestConnectionRequest,
+) -> std::result::Result<String, PebbleError> {
+    let proxy = match (request.proxy_host, request.proxy_port) {
+        (Some(h), Some(p)) if !h.is_empty() => Some(pebble_mail::ProxyConfig { host: h, port: p }),
+        _ => None,
+    };
+    let config = pebble_mail::ImapConfig {
+        host: request.imap_host,
+        port: request.imap_port,
+        username: String::new(),
+        password: String::new(),
+        security: request.imap_security,
+        proxy,
+    };
+    pebble_mail::ImapProvider::test_connection(&config).await
+}
+
+#[tauri::command]
+pub async fn test_account_connection(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> std::result::Result<String, PebbleError> {
+    let existing = state.store.get_auth_data(&account_id)?
+        .ok_or_else(|| PebbleError::Internal("No auth data found".into()))?;
+    let decrypted = state.crypto.decrypt(&existing)?;
+    let config: serde_json::Value = serde_json::from_slice(&decrypted)
+        .map_err(|e| PebbleError::Internal(format!("Failed to parse config: {e}")))?;
+    let imap_config: pebble_mail::ImapConfig = serde_json::from_value(
+        config.get("imap").cloned().ok_or_else(|| PebbleError::Internal("No IMAP config".into()))?
+    ).map_err(|e| PebbleError::Internal(format!("Failed to parse IMAP config: {e}")))?;
+    pebble_mail::ImapProvider::test_connection(&imap_config).await
 }
 
 #[tauri::command]

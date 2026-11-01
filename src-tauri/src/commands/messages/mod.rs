@@ -6,11 +6,16 @@ pub mod rendering;
 
 // Shared helpers used by flags and lifecycle submodules.
 
-use crate::commands::oauth::ensure_account_oauth_tokens;
+use crate::commands::encrypted_store::load_account_auth_data;
+use crate::commands::network::{
+    account_proxy_mode_from_auth_value, resolve_mail_proxy_from_mode, AccountProxyMode,
+};
+use crate::commands::oauth::ensure_account_oauth_auth;
 use crate::state::AppState;
 use pebble_core::{FolderRole, Message, PebbleError};
 use pebble_crypto::CryptoService;
-use pebble_mail::{GmailProvider, ImapConfig, ImapProvider, OutlookProvider};
+use pebble_mail::{GmailProvider, ImapConfig, ImapProvider, OutlookProvider, Pop3Config};
+use pebble_search::TantivySearch;
 use pebble_store::Store;
 use serde_json::json;
 
@@ -31,6 +36,24 @@ pub(super) fn remote_mutation_allows_local_commit(outcome: RemoteMutationOutcome
             | RemoteMutationOutcome::QueuedLocalCommit
             | RemoteMutationOutcome::LocalOnly
     )
+}
+
+pub(super) fn remote_delete_is_already_absent(error: &PebbleError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("status 404")
+        || message.contains("404 not found")
+        || message.contains("message not found")
+        || message.contains("no such message")
+}
+
+pub(super) fn classify_remote_delete_result(
+    result: std::result::Result<(), PebbleError>,
+    permanent: bool,
+) -> std::result::Result<(), PebbleError> {
+    match result {
+        Err(error) if permanent && remote_delete_is_already_absent(&error) => Ok(()),
+        result => result,
+    }
 }
 
 pub(super) fn queue_pending_remote_op(
@@ -78,44 +101,49 @@ pub(super) async fn connect_gmail(
     state: &AppState,
     account_id: &str,
 ) -> std::result::Result<GmailProvider, PebbleError> {
-    let tokens = ensure_account_oauth_tokens(state, account_id, "gmail").await?;
-    Ok(GmailProvider::new(tokens.access_token))
+    let auth = ensure_account_oauth_auth(state, account_id, "gmail").await?;
+    GmailProvider::new_with_proxy(auth.tokens.access_token, auth.proxy)
 }
 
 pub(super) async fn connect_outlook(
     state: &AppState,
     account_id: &str,
 ) -> std::result::Result<OutlookProvider, PebbleError> {
-    let tokens = ensure_account_oauth_tokens(state, account_id, "outlook").await?;
-    Ok(OutlookProvider::new(
-        tokens.access_token,
-        account_id.to_string(),
-    ))
+    let auth = ensure_account_oauth_auth(state, account_id, "outlook").await?;
+    OutlookProvider::new_with_proxy(auth.tokens.access_token, account_id.to_string(), auth.proxy)
 }
 
-pub(super) fn refresh_search_document(
+pub(crate) fn refresh_search_document(
     state: &AppState,
     message_id: &str,
 ) -> std::result::Result<(), PebbleError> {
-    let ids = vec![message_id.to_string()];
-    state.store.add_search_pending(&ids, "index")?;
+    refresh_search_document_with_store(&state.store, &state.search, message_id)
+}
 
-    match state.store.get_message(message_id)? {
+pub(crate) fn refresh_search_document_with_store(
+    store: &Store,
+    search: &TantivySearch,
+    message_id: &str,
+) -> std::result::Result<(), PebbleError> {
+    let ids = vec![message_id.to_string()];
+    store.add_search_pending(&ids, "index")?;
+
+    match store.get_message(message_id)? {
         Some(message) if !message.is_deleted => {
-            let folder_ids = state.store.get_message_folder_ids(message_id)?;
+            let folder_ids = store.get_message_folder_ids(message_id)?;
             if folder_ids.is_empty() {
-                state.search.remove_message(message_id)?;
+                search.remove_message(message_id)?;
             } else {
-                state.search.index_message(&message, &folder_ids)?;
+                search.index_message(&message, &folder_ids)?;
             }
         }
         Some(_) | None => {
-            state.search.remove_message(message_id)?;
+            search.remove_message(message_id)?;
         }
     }
 
-    state.search.commit()?;
-    state.store.clear_search_pending(&ids)?;
+    search.commit()?;
+    store.clear_search_pending(&ids)?;
     Ok(())
 }
 
@@ -139,7 +167,7 @@ pub(super) fn remove_search_documents(
 /// Use this instead of calling `refresh_search_document` in a loop: one commit
 /// for N messages is dramatically cheaper than N commits (segment flush +
 /// reader reload per doc).
-pub(super) fn refresh_search_documents(
+pub(crate) fn refresh_search_documents(
     state: &AppState,
     message_ids: &[String],
 ) -> std::result::Result<(), PebbleError> {
@@ -175,12 +203,17 @@ pub(super) fn load_imap_config(
     crypto: &CryptoService,
     account_id: &str,
 ) -> std::result::Result<ImapConfig, PebbleError> {
-    if let Some(encrypted) = store.get_auth_data(account_id)? {
-        let decrypted = crypto.decrypt(&encrypted)?;
+    let (mut config, proxy_mode): (ImapConfig, AccountProxyMode) = if let Some(decrypted) =
+        load_account_auth_data(crypto, store, account_id)?
+    {
         let value: serde_json::Value = serde_json::from_slice(&decrypted)
             .map_err(|e| PebbleError::Internal(format!("Failed to parse config: {e}")))?;
-        serde_json::from_value(value.get("imap").cloned().unwrap_or(value.clone()))
-            .map_err(|e| PebbleError::Internal(format!("Failed to deserialize IMAP config: {e}")))
+        let proxy_mode = account_proxy_mode_from_auth_value(&value);
+        let config = serde_json::from_value(value.get("imap").cloned().unwrap_or(value.clone()))
+            .map_err(|e| {
+                PebbleError::Internal(format!("Failed to deserialize IMAP config: {e}"))
+            })?;
+        (config, proxy_mode)
     } else {
         // Legacy path: IMAP config used to live inline in sync_state.
         let sync_state = store
@@ -189,9 +222,15 @@ pub(super) fn load_imap_config(
         let imap_value = sync_state.imap.ok_or_else(|| {
             PebbleError::Internal(format!("No IMAP config for account {account_id}"))
         })?;
-        serde_json::from_value(imap_value)
-            .map_err(|e| PebbleError::Internal(format!("Failed to deserialize IMAP config: {e}")))
-    }
+        let config = serde_json::from_value(imap_value).map_err(|e| {
+            PebbleError::Internal(format!("Failed to deserialize IMAP config: {e}"))
+        })?;
+        (config, AccountProxyMode::Inherit)
+    };
+
+    config.proxy = resolve_mail_proxy_from_mode(crypto, store, proxy_mode, config.proxy)?;
+
+    Ok(config)
 }
 
 /// Resolve an IMAP connection from the account's auth data.
@@ -203,6 +242,40 @@ pub(super) async fn connect_imap(
     let provider = ImapProvider::new(imap_config);
     provider.connect().await?;
     Ok(provider)
+}
+
+pub(super) fn load_pop3_config(
+    store: &Store,
+    crypto: &CryptoService,
+    account_id: &str,
+) -> std::result::Result<Pop3Config, PebbleError> {
+    let (imap_config, proxy_mode) = if let Some(decrypted) =
+        load_account_auth_data(crypto, store, account_id)?
+    {
+        let value: serde_json::Value = serde_json::from_slice(&decrypted)
+            .map_err(|e| PebbleError::Internal(format!("Failed to parse config: {e}")))?;
+        let proxy_mode = account_proxy_mode_from_auth_value(&value);
+        let config: ImapConfig = serde_json::from_value(
+            value.get("imap").cloned().unwrap_or(value.clone()),
+        )
+        .map_err(|e| PebbleError::Internal(format!("Failed to deserialize POP3 config: {e}")))?;
+        (config, proxy_mode)
+    } else {
+        return Err(PebbleError::Internal(format!(
+            "No POP3 config for account {account_id}"
+        )));
+    };
+
+    let proxy = resolve_mail_proxy_from_mode(crypto, store, proxy_mode, imap_config.proxy)?;
+    Ok(Pop3Config {
+        host: imap_config.host,
+        port: imap_config.port,
+        username: imap_config.username,
+        password: imap_config.password,
+        security: imap_config.security,
+        accept_invalid_certs: imap_config.accept_invalid_certs,
+        proxy,
+    })
 }
 
 /// Find the folder with a given role for an account.

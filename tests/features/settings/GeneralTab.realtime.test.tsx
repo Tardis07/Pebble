@@ -1,7 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import GeneralTab from "../../../src/features/settings/GeneralTab";
+import { showTestNotification } from "../../../src/lib/api";
 import { useUIStore } from "../../../src/stores/ui.store";
+
+vi.mock("../../../src/lib/api", () => ({
+  showTestNotification: vi.fn().mockResolvedValue(undefined),
+  openDefaultMailSettings: vi.fn().mockResolvedValue(undefined),
+  getAutostartEnabled: vi.fn().mockResolvedValue(false),
+  setAutostartEnabled: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock("react-i18next", () => ({
   initReactI18next: {
@@ -25,6 +33,13 @@ vi.mock("react-i18next", () => ({
         "settings.syncIntervalDesc": "How often to check for new messages (seconds)",
         "settings.notifications": "Notifications",
         "settings.enableNotifications": "Enable desktop notifications",
+        "settings.testNotification": "Send test notification",
+        "settings.testNotificationSent": "Test notification sent",
+        "settings.testNotificationFailed": "Failed to send test notification",
+        "settings.closeBehavior": "Close Behavior",
+        "settings.quitOnClose": "Quit app when window is closed",
+        "settings.startupBehavior": "Startup Behavior",
+        "settings.startHiddenToTray": "Start hidden to tray",
         "settings.folderCounts": "Folder Counts",
         "settings.showUnreadCount": "Show unread count badges in sidebar",
       };
@@ -33,18 +48,17 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
-}));
-
 describe("GeneralTab realtime mode", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     localStorage.clear();
     useUIStore.setState({
       pollInterval: 15,
       realtimeMode: "realtime",
       showFolderUnreadCount: false,
       notificationsEnabled: true,
+      keepRunningInBackground: true,
+      startHiddenToTray: false,
     });
   });
 
@@ -80,5 +94,39 @@ describe("GeneralTab realtime mode", () => {
 
     expect(useUIStore.getState().notificationsEnabled).toBe(false);
     expect(localStorage.getItem("pebble-notifications-enabled")).toBe("false");
+  });
+
+  it("sends a desktop test notification from the notifications section", async () => {
+    render(<GeneralTab />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Send test notification" }));
+
+    await waitFor(() => {
+      expect(showTestNotification).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("shows close-window behavior and persists quit-on-close through the UI store", () => {
+    render(<GeneralTab />);
+
+    const checkbox = screen.getByRole("checkbox", { name: "Quit app when window is closed" });
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(checkbox);
+
+    expect(useUIStore.getState().keepRunningInBackground).toBe(false);
+    expect(localStorage.getItem("pebble-keep-running-background")).toBe("false");
+  });
+
+  it("shows startup behavior and persists start-hidden-to-tray through the UI store", () => {
+    render(<GeneralTab />);
+
+    const checkbox = screen.getByRole("checkbox", { name: "Start hidden to tray" });
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(checkbox);
+
+    expect(useUIStore.getState().startHiddenToTray).toBe(true);
+    expect(localStorage.getItem("pebble-start-hidden-to-tray")).toBe("true");
   });
 });

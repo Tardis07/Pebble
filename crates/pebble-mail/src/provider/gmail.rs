@@ -5,11 +5,12 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
+use super::http_client_with_proxy;
 use crate::parser::{AttachmentData, AttachmentMeta};
 use pebble_core::traits::*;
 use pebble_core::{
-    new_id, now_timestamp, DraftMessage, EmailAddress, Folder, FolderRole, FolderType, Message,
-    PebbleError, ProviderCapabilities, Result,
+    new_id, now_timestamp, DraftMessage, EmailAddress, Folder, FolderRole, FolderType,
+    HttpProxyConfig, Message, PebbleError, ProviderCapabilities, Result,
 };
 
 const GMAIL_API_BASE: &str = "https://www.googleapis.com/gmail/v1/users/me";
@@ -164,9 +165,16 @@ pub struct GmailProvider {
 impl GmailProvider {
     pub fn new(access_token: String) -> Self {
         Self {
-            client: Client::new(),
+            client: http_client_with_proxy(None).expect("failed to build Gmail HTTP client"),
             access_token: RwLock::new(access_token),
         }
+    }
+
+    pub fn new_with_proxy(access_token: String, proxy: Option<HttpProxyConfig>) -> Result<Self> {
+        Ok(Self {
+            client: http_client_with_proxy(proxy.as_ref())?,
+            access_token: RwLock::new(access_token),
+        })
     }
 
     pub fn set_access_token(&self, token: String) {
@@ -492,6 +500,48 @@ impl GmailProvider {
     }
 }
 
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use pebble_core::HttpProxyConfig;
+
+    #[tokio::test]
+    async fn gmail_provider_new_ignores_all_proxy() {
+        crate::provider::proxy_test_support::assert_client_builder_ignores_all_proxy(|| {
+            GmailProvider::new("access-token".to_string()).client
+        })
+        .await;
+    }
+
+    #[test]
+    fn gmail_provider_accepts_socks5_proxy() {
+        let provider = GmailProvider::new_with_proxy(
+            "access-token".to_string(),
+            Some(HttpProxyConfig {
+                host: "127.0.0.1".to_string(),
+                port: 7890,
+            }),
+        );
+
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn gmail_provider_rejects_invalid_proxy() {
+        let err = GmailProvider::new_with_proxy(
+            "access-token".to_string(),
+            Some(HttpProxyConfig {
+                host: " ".to_string(),
+                port: 0,
+            }),
+        )
+        .err()
+        .unwrap();
+
+        assert!(err.to_string().contains("Proxy host"));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Trait implementations
 // ---------------------------------------------------------------------------
@@ -665,8 +715,8 @@ impl FolderProvider for GmailProvider {
             .collect())
     }
 
-    async fn move_message(&self, remote_id: &str, to_folder_id: &str) -> Result<()> {
-        // Gmail "move" is implemented as label modification
+    async fn move_message(&self, remote_id: &str, to_folder_id: &str) -> Result<String> {
+        // Gmail "move" is implemented as label modification; the message ID stays the same.
         let body = serde_json::json!({ "addLabelIds": [to_folder_id] });
         let url = format!("{GMAIL_API_BASE}/messages/{remote_id}/modify");
         let resp = self.post_json(&url, &body).await?;
@@ -676,7 +726,7 @@ impl FolderProvider for GmailProvider {
                 "Failed to move message (status {status})"
             )));
         }
-        Ok(())
+        Ok(remote_id.to_string())
     }
 }
 
@@ -750,6 +800,9 @@ impl DraftProvider for GmailProvider {
         let resp = self
             .delete(&format!("{GMAIL_API_BASE}/drafts/{draft_id}"))
             .await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(());
+        }
         if !resp.status().is_success() {
             let status = resp.status();
             return Err(PebbleError::Network(format!(
@@ -894,6 +947,58 @@ fn quote_mime_param(label: &str, value: &str) -> Result<String> {
     Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+fn rfc5987_encode(value: &str) -> String {
+    fn is_attr_char(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+            )
+    }
+
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        if is_attr_char(*byte) {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn ascii_filename_fallback(value: &str) -> String {
+    let fallback: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() && !ch.is_control() {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = fallback.trim_matches('_').trim();
+    if trimmed.is_empty() {
+        "attachment".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn mime_filename_param(name: &str, label: &str, value: &str) -> Result<String> {
+    validate_header_value(label, value)?;
+    if value.is_ascii() {
+        return Ok(format!("{name}=\"{}\"", quote_mime_param(label, value)?));
+    }
+
+    let fallback = quote_mime_param(label, &ascii_filename_fallback(value))?;
+    Ok(format!(
+        "{name}=\"{fallback}\"; {name}*=UTF-8''{}",
+        rfc5987_encode(value)
+    ))
+}
+
 fn new_mime_boundary(prefix: &str) -> String {
     format!("{prefix}-{}", new_id())
 }
@@ -927,6 +1032,11 @@ fn write_common_headers(
     if !cc.is_empty() {
         raw.push_str(&format!("Cc: {cc}\r\n"));
     }
+    // Gmail's raw send API derives recipients from the RFC 5322 message. Bcc
+    // must be present in the submission raw for Gmail to deliver to those
+    // recipients; Gmail is expected to strip it from delivered recipient
+    // copies. Do not remove this without replacing it with an envelope-level
+    // recipient API.
     if !bcc.is_empty() {
         raw.push_str(&format!("Bcc: {bcc}\r\n"));
     }
@@ -958,7 +1068,7 @@ fn append_body(raw: &mut String, body_text: &str, body_html: Option<&str>) {
 }
 
 fn build_raw_message(msg: &OutgoingMessage) -> Result<Vec<u8>> {
-    let mut raw = String::new();
+    let mut raw = crate::sender::from_header(&msg.from)?;
     write_common_headers(
         &mut raw,
         &msg.to,
@@ -988,7 +1098,10 @@ fn build_raw_message(msg: &OutgoingMessage) -> Result<Vec<u8>> {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("attachment");
-            let filename = quote_mime_param("attachment filename", filename)?;
+            let content_type_filename =
+                mime_filename_param("name", "attachment filename", filename)?;
+            let content_disposition_filename =
+                mime_filename_param("filename", "attachment filename", filename)?;
             let data = match std::fs::read(path) {
                 Ok(d) => d,
                 Err(e) => {
@@ -997,15 +1110,15 @@ fn build_raw_message(msg: &OutgoingMessage) -> Result<Vec<u8>> {
                 }
             };
             let encoded = base64_standard_encode(&data);
-            let content_type = guess_mime_type(&filename);
+            let content_type = guess_mime_type(filename);
 
             raw.push_str(&format!("--{mixed_boundary}\r\n"));
             raw.push_str(&format!(
-                "Content-Type: {content_type}; name=\"{filename}\"\r\n"
+                "Content-Type: {content_type}; {content_type_filename}\r\n"
             ));
             raw.push_str("Content-Transfer-Encoding: base64\r\n");
             raw.push_str(&format!(
-                "Content-Disposition: attachment; filename=\"{filename}\"\r\n\r\n"
+                "Content-Disposition: attachment; {content_disposition_filename}\r\n\r\n"
             ));
             // Wrap base64 at 76 chars per line per RFC 2045
             for chunk in encoded.as_bytes().chunks(76) {
@@ -1078,6 +1191,10 @@ fn guess_mime_type(filename: &str) -> &'static str {
 
 fn build_draft_raw(draft: &DraftMessage) -> Result<Vec<u8>> {
     let message = OutgoingMessage {
+        from: draft
+            .from
+            .clone()
+            .ok_or_else(|| PebbleError::Validation("Draft has no sender identity".into()))?,
         to: draft.to.clone(),
         cc: draft.cc.clone(),
         bcc: draft.bcc.clone(),
@@ -1436,6 +1553,10 @@ mod tests {
     #[test]
     fn test_build_raw_message() {
         let msg = OutgoingMessage {
+            from: pebble_core::EmailAddress {
+                name: Some("Sender".into()),
+                address: "sender@example.com".into(),
+            },
             to: vec![EmailAddress {
                 name: None,
                 address: "test@example.com".to_string(),
@@ -1449,6 +1570,10 @@ mod tests {
             attachment_paths: vec![],
         };
         let raw = String::from_utf8(build_raw_message(&msg).unwrap()).unwrap();
+        assert_eq!(
+            raw.lines().filter(|line| line.starts_with("From:")).count(),
+            1
+        );
         assert!(raw.contains("To: test@example.com"));
         assert!(raw.contains("Subject: Test Subject"));
         assert!(raw.contains("Hello"));
@@ -1459,6 +1584,10 @@ mod tests {
     #[test]
     fn build_raw_message_rejects_crlf_header_injection() {
         let msg = OutgoingMessage {
+            from: pebble_core::EmailAddress {
+                name: Some("Sender".into()),
+                address: "sender@example.com".into(),
+            },
             to: vec![EmailAddress {
                 name: Some("Alice\r\nBcc: victim@example.com".to_string()),
                 address: "alice@example.com".to_string(),
@@ -1478,6 +1607,10 @@ mod tests {
     #[test]
     fn build_raw_message_rejects_crlf_attachment_filename() {
         let msg = OutgoingMessage {
+            from: pebble_core::EmailAddress {
+                name: Some("Sender".into()),
+                address: "sender@example.com".into(),
+            },
             to: vec![EmailAddress {
                 name: None,
                 address: "alice@example.com".to_string(),
@@ -1495,8 +1628,44 @@ mod tests {
     }
 
     #[test]
+    fn build_raw_message_encodes_non_ascii_attachment_filename() {
+        let base = std::env::temp_dir().join(format!("pebble-gmail-attachment-{}", new_id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let attachment = base.join("报价单.pdf");
+        std::fs::write(&attachment, b"payload").unwrap();
+        let msg = OutgoingMessage {
+            from: pebble_core::EmailAddress {
+                name: Some("Sender".into()),
+                address: "sender@example.com".into(),
+            },
+            to: vec![EmailAddress {
+                name: None,
+                address: "alice@example.com".to_string(),
+            }],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Attachment".to_string(),
+            body_text: "Body".to_string(),
+            body_html: None,
+            in_reply_to: None,
+            attachment_paths: vec![attachment.to_string_lossy().to_string()],
+        };
+
+        let raw = String::from_utf8(build_raw_message(&msg).unwrap()).unwrap();
+
+        assert!(raw.contains("filename*=UTF-8''%E6%8A%A5%E4%BB%B7%E5%8D%95.pdf"));
+        assert!(raw.contains("name*=UTF-8''%E6%8A%A5%E4%BB%B7%E5%8D%95.pdf"));
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn build_raw_message_uses_per_message_boundary() {
         let msg = OutgoingMessage {
+            from: pebble_core::EmailAddress {
+                name: Some("Sender".into()),
+                address: "sender@example.com".into(),
+            },
             to: vec![EmailAddress {
                 name: None,
                 address: "alice@example.com".to_string(),
@@ -1521,6 +1690,10 @@ mod tests {
     #[test]
     fn test_build_raw_message_with_cc_and_reply() {
         let msg = OutgoingMessage {
+            from: pebble_core::EmailAddress {
+                name: Some("Sender".into()),
+                address: "sender@example.com".into(),
+            },
             to: vec![EmailAddress {
                 name: Some("Alice".to_string()),
                 address: "alice@example.com".to_string(),
@@ -1544,6 +1717,10 @@ mod tests {
     #[test]
     fn test_build_raw_message_with_bcc_and_html_body() {
         let msg = OutgoingMessage {
+            from: pebble_core::EmailAddress {
+                name: Some("Sender".into()),
+                address: "sender@example.com".into(),
+            },
             to: vec![EmailAddress {
                 name: None,
                 address: "alice@example.com".to_string(),
@@ -1573,6 +1750,10 @@ mod tests {
         std::fs::write(&path, b"hello").unwrap();
         let path_string = path.to_string_lossy().into_owned();
         let draft = DraftMessage {
+            from: Some(EmailAddress {
+                name: Some("张三".into()),
+                address: "sender@example.com".into(),
+            }),
             id: None,
             to: vec![EmailAddress {
                 name: None,

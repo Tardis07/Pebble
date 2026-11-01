@@ -60,7 +60,7 @@ vi.mock("../../src/stores/toast.store", () => ({
 
 import MessageItem from "../../src/components/MessageItem";
 
-function makeMessage(): MessageSummary {
+function makeMessage(overrides: Partial<MessageSummary> = {}): MessageSummary {
   return {
     id: "message-1",
     account_id: "account-1",
@@ -86,6 +86,7 @@ function makeMessage(): MessageSummary {
     deleted_at: null,
     created_at: 1_700_000_000,
     updated_at: 1_700_000_000,
+    ...overrides,
   };
 }
 
@@ -157,6 +158,39 @@ describe("MessageItem", () => {
     await waitFor(() => expect(mocks.restoreMessagesCache).toHaveBeenCalledWith(mocks.queryClient, snapshot));
   });
 
+  it("refreshes folder unread counts after a successful archive action", async () => {
+    render(
+      <MessageItem
+        message={makeMessage()}
+        isSelected={false}
+        onClick={vi.fn()}
+      />,
+    );
+
+    fireEvent.mouseEnter(screen.getByRole("option"));
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+
+    await waitFor(() => expect(mocks.archiveMessage).toHaveBeenCalledWith("message-1"));
+    expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["folder-unread-counts"] });
+  });
+
+  it("refreshes folder unread counts after a successful spam action", async () => {
+    render(
+      <MessageItem
+        message={makeMessage()}
+        isSelected={false}
+        onClick={vi.fn()}
+        spamFolderId="folder-spam"
+      />,
+    );
+
+    fireEvent.mouseEnter(screen.getByRole("option"));
+    fireEvent.click(screen.getByRole("button", { name: "Report spam" }));
+
+    await waitFor(() => expect(mocks.moveToFolder).toHaveBeenCalledWith("message-1", "folder-spam"));
+    expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["folder-unread-counts"] });
+  });
+
   it("refreshes derived queries after starring from row actions", async () => {
     render(
       <MessageItem
@@ -174,6 +208,33 @@ describe("MessageItem", () => {
     expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["threads"] });
     expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["starred-messages"] });
     expect(mocks.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["message", "message-1"] });
+  });
+
+  it("rolls back optimistic star state and shows an error when persistence fails", async () => {
+    const snapshot = { messages: "before-star" };
+    const onToggleStar = vi.fn();
+    mocks.snapshotMessagesCache.mockReturnValueOnce(snapshot);
+    mocks.updateMessageFlags.mockRejectedValueOnce(new Error("star failed"));
+
+    render(
+      <MessageItem
+        message={makeMessage({ is_starred: false })}
+        isSelected={false}
+        onClick={vi.fn()}
+        onToggleStar={onToggleStar}
+      />,
+    );
+
+    fireEvent.mouseEnter(screen.getByRole("option"));
+    fireEvent.click(screen.getByRole("button", { name: "Star" }));
+
+    expect(onToggleStar).toHaveBeenCalledWith("message-1", true);
+    await waitFor(() => expect(onToggleStar).toHaveBeenLastCalledWith("message-1", false));
+    expect(mocks.restoreMessagesCache).toHaveBeenCalledWith(mocks.queryClient, snapshot);
+    expect(mocks.addToast).toHaveBeenCalledWith({
+      message: "Failed to star message",
+      type: "error",
+    });
   });
 
   it("uses the custom batch checkbox control for row selection", () => {
@@ -198,5 +259,104 @@ describe("MessageItem", () => {
     fireEvent.click(checkbox);
 
     expect(onToggleBatchSelect).toHaveBeenCalledWith("message-1");
+  });
+
+  it("shows the source account color marker when an account color is provided", () => {
+    render(
+      <MessageItem
+        message={makeMessage()}
+        isSelected={false}
+        onClick={vi.fn()}
+        {...({
+          accountColor: "#22c55e",
+          accountLabel: "Work <work@example.com>",
+        } as Record<string, unknown>)}
+      />,
+    );
+
+    const marker = screen.getByTitle("Work <work@example.com>");
+
+    expect(marker.getAttribute("aria-label")).toBe("Work <work@example.com>");
+    expect(marker.style.backgroundColor).toBe("rgb(34, 197, 94)");
+  });
+
+  it("marks unread rows with a row class", () => {
+    render(
+      <MessageItem
+        message={makeMessage({ is_read: false })}
+        isSelected={false}
+        onClick={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("option").className).toContain("message-list-row--unread");
+  });
+
+  it("keeps the sender line semibold regardless of read state", () => {
+    render(
+      <MessageItem
+        message={makeMessage({ is_read: true })}
+        isSelected={false}
+        onClick={vi.fn()}
+      />,
+    );
+
+    const senderLine = screen.getByText("Sender").parentElement;
+
+    expect(senderLine?.style.fontWeight).toBe("600");
+  });
+
+  it("renders read subjects regular and unread subjects semibold", () => {
+    const { unmount } = render(
+      <MessageItem
+        message={makeMessage({ is_read: true })}
+        isSelected={false}
+        onClick={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Archived message").style.fontWeight).toBe("400");
+
+    unmount();
+
+    render(
+      <MessageItem
+        message={makeMessage({ is_read: false })}
+        isSelected={false}
+        onClick={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Archived message").style.fontWeight).toBe("600");
+  });
+
+  it("shows recipients as the primary contact in the sent folder", () => {
+    render(
+      <MessageItem
+        message={makeMessage({
+          from_name: "Current Account",
+          from_address: "current@example.com",
+          to_list: [{ name: "Destination", address: "destination@example.com" }],
+        })}
+        isSelected={false}
+        onClick={vi.fn()}
+        folderRole="sent"
+      />,
+    );
+
+    expect(screen.getByText("Destination")).toBeTruthy();
+    expect(screen.queryByText("Current Account")).toBeNull();
+  });
+
+  it("does not add unread row treatment to read rows", () => {
+    render(
+      <MessageItem
+        message={makeMessage({ is_read: true })}
+        isSelected={false}
+        onClick={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("option").className).not.toContain("message-list-row--unread");
   });
 });

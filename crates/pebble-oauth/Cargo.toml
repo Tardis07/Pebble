@@ -1,12 +1,13 @@
 [package]
 name = "pebble-oauth"
-version = "0.1.0"
+version = "0.1.5"
 edition = "2021"
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
+pebble-core = { path = "../pebble-core" }
 oauth2 = "5"
 tokio = { workspace = true }
 reqwest = { workspace = true }

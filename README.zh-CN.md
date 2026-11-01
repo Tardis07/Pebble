@@ -34,7 +34,7 @@ Pebble 的设计目标很直接：
 - 隐私控制应该明确可见，并且可以按单封邮件临时放宽。
 - 搜索、稍后提醒、规则和看板应该协同工作，而不是散落在不同工具里。
 
-Pebble 目前支持 Gmail、IMAP，以及实验性的 Outlook 账户。
+Pebble 目前支持 Gmail、IMAP、POP3，以及实验性的 Outlook 账户。
 
 ## 主要特性
 
@@ -50,21 +50,35 @@ Pebble 目前支持 Gmail、IMAP，以及实验性的 Outlook 账户。
 ### 邮件处理
 
 - 多账户聚合收件箱。
-- 支持 Gmail、IMAP 和实验性的 Outlook。
+- 支持 Gmail、IMAP、POP3 和实验性的 Outlook。
 - 支持线程视图和普通邮件列表视图。
 - 支持归档、删除、星标、标记已读、批量操作和恢复。
 - 支持邮件稍后提醒。
 - 支持全文搜索和高级过滤。
 - 支持规则引擎，自动整理邮件。
+- 邮件 CSS 渲染，支持内嵌样式。
+- 可选允许无效 TLS 证书，兼容自建邮件服务器。
 
 ### 效率工具
 
+- 本地通讯录，支持搜索、收藏、备注、多个带标签的邮箱地址，并可从邮件参与者一键创建或查看联系人。
+- 收件人自动补全会优先显示已保存联系人，并保留最近联系过的地址。
+- 支持导入和导出 vCard（`.vcf`），方便与其他通讯录迁移联系人。重新导入时按规范化邮箱合并；若本地姓名或备注非空，则优先保留本地内容。
 - 看板视图，包含 Todo、Waiting、Done 三列。
 - 命令面板和键盘优先导航。
-- 内置翻译能力，支持双语阅读。
-- 深色和浅色主题。
+- 内置翻译能力，支持双语阅读和自定义快捷键（`T` 翻译选中文字，`Ctrl+Shift+T` 切换双语对照）。
+- 深色和浅色主题，支持壁纸背景。
 - 内置英文和中文界面。
-- 可选的 WebDAV 备份，用于同步设置、规则和看板数据。
+- 可选的本地文件导入/导出和 WebDAV 备份，用于同步联系人、设置、规则、看板卡片和看板备注。
+- 支持自动定时 WebDAV 备份，间隔可配置。
+
+### 平台集成
+
+- macOS 原生红绿灯窗口控制按钮。
+- Windows 端可注册为默认邮件客户端（设置 > 通用）。
+- 托盘模式：窗口隐藏时仍会保持邮件同步运行。
+- 支持启动时隐藏到系统托盘。
+- 支持 `mailto:` 协议，可从外部应用唤起写信。
 
 ## 截图
 
@@ -94,12 +108,36 @@ Pebble 目前支持 Gmail、IMAP，以及实验性的 Outlook 账户。
 
 ## 开始使用
 
+### 安装
+
+你可以从 [发布版本](https://github.com/QingJ01/Pebble/releases) 页面下载预构建的桌面安装包。
+
+Arch Linux 用户可以通过 AUR 安装 `pebble-bin`：
+
+```bash
+yay -S pebble-bin
+# 或者
+paru -S pebble-bin
+```
+
 ### 环境要求
 
 - Rust stable
 - Node.js 18 或更新版本
 - pnpm 8 或更新版本
 - 当前平台所需的 Tauri 系统依赖
+
+### 配置文件存储
+
+默认情况下，Pebble 会把数据库、搜索索引、附件、日志、导入的背景图以及本地界面偏好存放在系统应用数据目录下。
+
+你可以在 Pebble 启动前选择自定义或便携配置目录：
+
+- 设置 `PEBBLE_PROFILE_DIR` 为一个绝对路径。
+- 在 `pebble.exe` 旁边放置 `pebble-profile.txt`；第一行可以是绝对路径，也可以是相对于可执行文件目录的路径。
+- 在 `pebble.exe` 旁边创建 `pebble-profile` 目录，让 Pebble 数据保存在应用旁边。
+
+选中的目录会在下次启动时生效。
 
 ### 开发环境
 
@@ -119,9 +157,18 @@ pnpm dev
 
 ```bash
 pnpm build
+pnpm build:windows
+pnpm build:macos
+pnpm build:linux
 ```
 
 桌面端构建产物会输出到 `target/release/` 和 `target/release/bundle/`。
+macOS 构建产物默认不签名，除非你自行配置签名流程。
+将未签名的 macOS 构建复制到 `/Applications` 后，请先执行下面的命令再打开应用：
+
+```bash
+sudo xattr -cr /Applications/Pebble.app
+```
 
 ## OAuth 配置
 
@@ -144,7 +191,10 @@ Pebble 可以通过 OAuth 连接 Gmail 和 Outlook。IMAP 账户使用应用内�
 | `pnpm dev:frontend` | 只启动 Vite 前端开发服务。 |
 | `pnpm test` | 使用 Vitest 运行前端测试。 |
 | `pnpm build:frontend` | 类型检查并构建前端。 |
-| `pnpm build` | 构建桌面应用。 |
+| `pnpm build` | 为当前平台构建桌面应用。 |
+| `pnpm build:windows` | 构建 Windows NSIS 安装包。 |
+| `pnpm build:macos` | 构建未签名的 macOS `.app` 和 `.dmg` 包。 |
+| `pnpm build:linux` | 构建 Linux `.AppImage`、`.deb` 和 `.rpm` 包。 |
 | `cargo test -p pebble-mail` | 运行邮件模块测试。 |
 | `cargo check` | 检查 Rust 工作区。 |
 
@@ -186,9 +236,21 @@ Pebble/
 | `F` | 转发 |
 | `C` | 写新邮件 |
 | `/` | 聚焦搜索 |
+| `T` | 翻译选中文字 |
+| `Ctrl+Shift+T` | 切换双语对照 |
 | `Esc` | 关闭、取消或返回 |
 
 快捷键可以在设置中查看和自定义。
+
+## Pebble Web
+
+想要自托管的网页版？**[Pebble Web](https://github.com/QingJ01/Pebble-Web)** 提供与桌面版相同的功能，通过 Docker 部署，任何浏览器即可访问。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/QingJ01/Pebble-Web/main/docker-compose.yml -o docker-compose.yml && docker compose up -d
+```
+
+Pebble Web 共享相同的 Rust 核心代码和 React 前端。部署到你自己的服务器，随时随地访问邮件。
 
 ## 当前状态
 

@@ -4,6 +4,7 @@ import { useMailStore } from "@/stores/mail.store";
 import { useToastStore } from "@/stores/toast.store";
 import { listTrustedSenders, removeTrustedSender } from "@/lib/api";
 import type { TrustedSender } from "@/lib/api";
+import { profileLocalStorage } from "@/lib/profileStorage";
 import {
   PRIVACY_MODE_KEY,
   readStoredPrivacyMode,
@@ -20,22 +21,31 @@ export default function PrivacyTab() {
   );
 
   useEffect(() => {
-    if (activeAccountId) {
-      listTrustedSenders(activeAccountId)
-        .then(setTrustedSenders)
-        .catch((err) => {
-          console.warn("Failed to load trusted senders", err);
-          useToastStore.getState().addToast({
-            message: t("privacy.loadTrustedFailed", "Failed to load trusted senders"),
-            type: "error",
-          });
-        });
+    if (!activeAccountId) {
+      setTrustedSenders((prev) => prev.length === 0 ? prev : []);
+      return;
     }
+
+    let cancelled = false;
+    listTrustedSenders(activeAccountId)
+      .then((senders) => {
+        if (!cancelled) setTrustedSenders(senders);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn("Failed to load trusted senders", err);
+        useToastStore.getState().addToast({
+          message: t("privacy.loadTrustedFailed", "Failed to load trusted senders"),
+          type: "error",
+        });
+      });
+
+    return () => { cancelled = true; };
   }, [activeAccountId, t]);
 
   function handlePrivacyModeChange(mode: StoredPrivacyMode) {
     setPrivacyMode(mode);
-    localStorage.setItem(PRIVACY_MODE_KEY, mode);
+    profileLocalStorage.setItem(PRIVACY_MODE_KEY, mode);
   }
 
   async function handleRemoveTrust(email: string) {
@@ -128,7 +138,7 @@ export default function PrivacyTab() {
         <p style={{ margin: "4px 0 0", color: "var(--color-text-secondary)", fontSize: "12px" }}>
           {privacyMode === "off"
             ? t("privacy.trackerBlockingOff", "Tracker blocking is disabled in Off mode. All images and trackers are loaded directly.")
-            : t("privacy.trackerBlockingDesc", "Known tracking pixels and tracker domains are always blocked regardless of privacy mode.")}
+            : t("privacy.trackerBlockingDesc", "Known tracking pixels and tracker domains are blocked unless privacy is Off or the sender is fully trusted.")}
         </p>
       </div>
 

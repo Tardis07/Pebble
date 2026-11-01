@@ -9,7 +9,7 @@ use crate::state::{AppState, SyncHandle};
 use pebble_core::{PebbleError, ProviderType};
 use pebble_mail::{
     GmailProvider, GmailSyncWorker, ImapMailProvider, OutlookProvider, OutlookSyncWorker,
-    SyncConfig, SyncRuntimeStatus, SyncWorker,
+    Pop3Provider, Pop3SyncWorker, SyncConfig, SyncRuntimeStatus, SyncWorker,
 };
 use pebble_store::Store;
 use std::collections::HashSet;
@@ -18,6 +18,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, State};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
+
+fn spawn_sync_start_placeholder(
+    stop_rx: watch::Receiver<bool>,
+    trigger_rx: mpsc::UnboundedReceiver<SyncTrigger>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let _keepalive = (stop_rx, trigger_rx);
+        std::future::pending::<()>().await;
+    })
+}
 
 #[tauri::command]
 pub async fn start_sync(
@@ -70,9 +80,9 @@ async fn start_sync_inner(
         }
         // Insert a placeholder with a dummy stop channel. The real handle
         // will replace it below. If setup fails, we remove the placeholder.
-        let (placeholder_tx, _placeholder_rx) = watch::channel(false);
-        let (placeholder_trigger_tx, _placeholder_trigger_rx) = mpsc::unbounded_channel();
-        let placeholder_task = tokio::spawn(async {});
+        let (placeholder_tx, placeholder_rx) = watch::channel(false);
+        let (placeholder_trigger_tx, placeholder_trigger_rx) = mpsc::unbounded_channel();
+        let placeholder_task = spawn_sync_start_placeholder(placeholder_rx, placeholder_trigger_rx);
         handles.insert(
             account_id.clone(),
             SyncHandle {
@@ -89,14 +99,18 @@ async fn start_sync_inner(
         Ok(Some(a)) => a,
         Ok(None) => {
             let mut handles = state.sync_handles.lock().await;
-            handles.remove(&account_id);
+            if let Some(handle) = handles.remove(&account_id) {
+                handle.task.abort();
+            }
             return Err(PebbleError::Internal(format!(
                 "Account not found: {account_id}"
             )));
         }
         Err(e) => {
             let mut handles = state.sync_handles.lock().await;
-            handles.remove(&account_id);
+            if let Some(handle) = handles.remove(&account_id) {
+                handle.task.abort();
+            }
             return Err(e);
         }
     };
@@ -124,6 +138,14 @@ async fn start_sync_inner(
                     Some(sync_error.message.clone()),
                 ),
             );
+        }
+    });
+
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+    let app_for_sync_progress = app.clone();
+    tokio::spawn(async move {
+        while let Some(sync_progress) = progress_rx.recv().await {
+            let _ = app_for_sync_progress.emit(events::MAIL_SYNC_PROGRESS, &sync_progress);
         }
     });
 
@@ -155,6 +177,7 @@ async fn start_sync_inner(
         stop_rx,
         trigger_rx,
         error_tx,
+        progress_tx,
         message_tx,
         app_for_progress,
         account_id_for_progress,
@@ -165,7 +188,9 @@ async fn start_sync_inner(
         Ok(task) => task,
         Err(e) => {
             let mut handles = state.sync_handles.lock().await;
-            handles.remove(&account_id);
+            if let Some(handle) = handles.remove(&account_id) {
+                handle.task.abort();
+            }
             return Err(e);
         }
     };
@@ -173,14 +198,16 @@ async fn start_sync_inner(
     // Replace the placeholder with the real sync handle.
     {
         let mut handles = state.sync_handles.lock().await;
-        handles.insert(
+        if let Some(previous) = handles.insert(
             account_id,
             SyncHandle {
                 stop_tx,
                 trigger_tx,
                 task,
             },
-        );
+        ) {
+            previous.task.abort();
+        }
     }
 
     Ok(())
@@ -189,6 +216,7 @@ async fn start_sync_inner(
 fn provider_slug(provider: &ProviderType) -> &'static str {
     match provider {
         ProviderType::Imap => "imap",
+        ProviderType::Pop3 => "pop3",
         ProviderType::Gmail => "gmail",
         ProviderType::Outlook => "outlook",
     }
@@ -315,7 +343,22 @@ impl RealtimePreferenceStartSummary {
     }
 
     fn into_command_result(self) -> std::result::Result<(), PebbleError> {
-        Ok(())
+        if self.failures.is_empty() {
+            return Ok(());
+        }
+
+        let failures = self
+            .failures
+            .iter()
+            .map(|(account_id, error)| format!("{account_id}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(PebbleError::Internal(format!(
+            "Realtime preference applied with {} account start failure(s); {} account(s) started; failures: {}",
+            self.failures.len(),
+            self.started_count,
+            failures
+        )))
     }
 }
 
@@ -332,6 +375,7 @@ fn build_sync_task(
     stop_rx: watch::Receiver<bool>,
     trigger_rx: mpsc::UnboundedReceiver<SyncTrigger>,
     error_tx: mpsc::UnboundedSender<pebble_mail::SyncError>,
+    progress_tx: mpsc::UnboundedSender<pebble_mail::SyncProgress>,
     message_tx: mpsc::UnboundedSender<pebble_mail::StoredMessage>,
     app_for_progress: tauri::AppHandle,
     account_id_for_progress: String,
@@ -360,13 +404,17 @@ fn build_sync_task(
                 }
             };
             let expires_at = tokens.expires_at;
-            let provider = Arc::new(GmailProvider::new(tokens.access_token.clone()));
+            let provider = Arc::new(GmailProvider::new_with_proxy(
+                tokens.access_token.clone(),
+                tokens.proxy.clone(),
+            )?);
             let refresher = build_oauth_token_refresher(
                 gmail_oauth_config(),
                 tokens.refresh_token,
                 tokens.access_token,
                 Arc::clone(&state.crypto),
                 Arc::clone(&state.store),
+                Arc::clone(&state.oauth_account_locks),
                 account_id_clone.clone(),
             );
 
@@ -375,10 +423,6 @@ fn build_sync_task(
                 if let Some(interval) = poll_interval_secs {
                     config.poll_interval_secs = interval;
                 }
-                let _ = app_for_progress.emit(
-                    events::MAIL_SYNC_PROGRESS,
-                    serde_json::json!({ "account_id": &account_id_for_progress, "status": "started" }),
-                );
                 emit_realtime_status(
                     &app_for_progress,
                     realtime_status_payload(
@@ -399,6 +443,7 @@ fn build_sync_task(
                 )
                 .with_error_tx(error_tx)
                 .with_message_tx(message_tx)
+                .with_progress_tx(progress_tx)
                 .with_token_refresher(refresher, expires_at);
                 worker.run(config, Some(trigger_rx)).await;
                 let _ = app_for_progress.emit(
@@ -428,16 +473,18 @@ fn build_sync_task(
                 }
             };
             let expires_at = tokens.expires_at;
-            let provider = Arc::new(OutlookProvider::new(
+            let provider = Arc::new(OutlookProvider::new_with_proxy(
                 tokens.access_token.clone(),
                 account_id_clone.clone(),
-            ));
+                tokens.proxy.clone(),
+            )?);
             let refresher = build_oauth_token_refresher(
                 outlook_oauth_config(),
                 tokens.refresh_token,
                 tokens.access_token,
                 Arc::clone(&state.crypto),
                 Arc::clone(&state.store),
+                Arc::clone(&state.oauth_account_locks),
                 account_id_clone.clone(),
             );
 
@@ -446,10 +493,6 @@ fn build_sync_task(
                 if let Some(interval) = poll_interval_secs {
                     config.poll_interval_secs = interval;
                 }
-                let _ = app_for_progress.emit(
-                    events::MAIL_SYNC_PROGRESS,
-                    serde_json::json!({ "account_id": &account_id_for_progress, "status": "started" }),
-                );
                 emit_realtime_status(
                     &app_for_progress,
                     realtime_status_payload(
@@ -469,6 +512,7 @@ fn build_sync_task(
                 )
                 .with_error_tx(error_tx)
                 .with_message_tx(message_tx)
+                .with_progress_tx(progress_tx)
                 .with_token_refresher(refresher, expires_at);
                 worker.run(config, stop_rx, Some(trigger_rx)).await;
                 let _ = app_for_progress.emit(
@@ -479,6 +523,68 @@ fn build_sync_task(
                     "Outlook sync task completed for account {}",
                     account_id_clone
                 );
+            })
+        }
+        ProviderType::Pop3 => {
+            let pop3_config = match crate::commands::messages::load_pop3_config(
+                &state.store,
+                &state.crypto,
+                &account_id_clone,
+            ) {
+                Ok(config) => config,
+                Err(e) => {
+                    emit_realtime_status(
+                        &app_for_progress,
+                        realtime_status_payload(
+                            &account_id_clone,
+                            &ProviderType::Pop3,
+                            RealtimeMode::Error,
+                            None,
+                            None,
+                            Some(e.to_string()),
+                        ),
+                    );
+                    return Err(e);
+                }
+            };
+
+            let provider = Arc::new(Pop3Provider::new(pop3_config));
+            tokio::spawn(async move {
+                let mut config = SyncConfig::default();
+                if let Some(interval) = poll_interval_secs {
+                    config.poll_interval_secs = interval;
+                }
+                emit_realtime_status(
+                    &app_for_progress,
+                    realtime_status_payload(
+                        &account_id_for_progress,
+                        &ProviderType::Pop3,
+                        if config.manual_only() {
+                            RealtimeMode::Manual
+                        } else {
+                            RealtimeMode::Polling
+                        },
+                        Some(now_timestamp_secs()),
+                        None,
+                        Some(polling_status_message(&config)),
+                    ),
+                );
+                let worker = Pop3SyncWorker::new(
+                    account_id_clone.clone(),
+                    provider,
+                    store,
+                    stop_rx,
+                    attachments_dir,
+                )
+                .with_error_tx(error_tx)
+                .with_message_tx(message_tx)
+                .with_progress_tx(progress_tx);
+                worker.run(config, Some(trigger_rx)).await;
+                let _ = app_for_progress.emit(
+                    events::MAIL_SYNC_COMPLETE,
+                    serde_json::json!({ "account_id": &account_id_for_progress }),
+                );
+                info!("POP3 sync task completed for account {}", account_id_clone);
             })
         }
         ProviderType::Imap => {
@@ -511,10 +617,6 @@ fn build_sync_task(
                 if let Some(interval) = poll_interval_secs {
                     config.poll_interval_secs = interval;
                 }
-                let _ = app_for_progress.emit(
-                    events::MAIL_SYNC_PROGRESS,
-                    serde_json::json!({ "account_id": &account_id_for_progress, "status": "started" }),
-                );
                 emit_realtime_status(
                     &app_for_progress,
                     realtime_status_payload(
@@ -562,6 +664,7 @@ fn build_sync_task(
                 )
                 .with_error_tx(error_tx)
                 .with_message_tx(message_tx)
+                .with_progress_tx(progress_tx)
                 .with_runtime_status_tx(runtime_status_tx);
                 worker.run(config, Some(trigger_rx)).await;
                 let _ = app_for_progress.emit(
@@ -793,7 +896,23 @@ mod trigger_tests {
 
         assert_eq!(summary.started_count, 1);
         assert_eq!(summary.failures.len(), 1);
-        assert!(summary.into_command_result().is_ok());
+        let err = summary
+            .into_command_result()
+            .expect_err("partial realtime preference failures should be visible to the UI");
+        assert!(err.to_string().contains("bad-account"));
+        assert!(err.to_string().contains("1 account(s) started"));
+    }
+
+    #[tokio::test]
+    async fn sync_start_placeholder_keeps_slot_reserved_until_replaced() {
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
+        let handle = spawn_sync_start_placeholder(stop_rx, trigger_rx);
+        tokio::task::yield_now().await;
+
+        assert!(!handle.is_finished());
+        assert!(trigger_tx.send(SyncTrigger::Manual).is_ok());
+        handle.abort();
     }
 
     #[test]

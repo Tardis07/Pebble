@@ -4,6 +4,7 @@
 //! Tantivy, and applies rule-engine actions. Split out of `sync_cmd.rs`
 //! so the sync lifecycle and the indexing pipeline can evolve independently.
 
+use crate::commands::notifications;
 use crate::commands::pending_mail_ops::queue_pending_mail_op;
 use crate::events;
 use crate::state::AppState;
@@ -16,9 +17,17 @@ use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
+
+#[cfg(any(
+    windows,
+    all(not(windows), not(target_os = "linux"), not(target_os = "macos"))
+))]
+use tauri_plugin_notification::NotificationExt;
+
+#[cfg(any(target_os = "linux", windows))]
+const NOTIFICATION_OPEN_ACTION: &str = "open";
 
 /// Rebuild the search index from all messages in the store.
 ///
@@ -126,7 +135,13 @@ fn notification_open_payload(account_id: &str, message_id: &str) -> serde_json::
     })
 }
 
+#[cfg(any(target_os = "linux", windows))]
+fn is_notification_open_action(action: &str) -> bool {
+    matches!(action, "default" | NOTIFICATION_OPEN_ACTION)
+}
+
 fn open_message_from_notification(app: &tauri::AppHandle, account_id: &str, message_id: &str) {
+    notifications::clear_attention_indicator(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -138,6 +153,10 @@ fn open_message_from_notification(app: &tauri::AppHandle, account_id: &str, mess
     );
 }
 
+#[cfg(any(
+    windows,
+    all(not(windows), not(target_os = "linux"), not(target_os = "macos"))
+))]
 fn show_default_new_mail_notification(app: &tauri::AppHandle, body: &str) -> Result<(), String> {
     app.notification()
         .builder()
@@ -147,23 +166,92 @@ fn show_default_new_mail_notification(app: &tauri::AppHandle, body: &str) -> Res
         .map_err(|e| e.to_string())
 }
 
-#[cfg(windows)]
-fn windows_notification_app_id(app: &tauri::AppHandle) -> String {
-    use std::path::MAIN_SEPARATOR as SEP;
+#[cfg(target_os = "linux")]
+fn show_linux_new_mail_notification(
+    app: &tauri::AppHandle,
+    body: &str,
+    account_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    notifications::ensure_notification_environment(app)?;
 
-    let is_dev_build_dir = tauri::utils::platform::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.display().to_string()))
-        .is_some_and(|curr_dir| {
-            curr_dir.ends_with(format!("{SEP}target{SEP}debug").as_str())
-                || curr_dir.ends_with(format!("{SEP}target{SEP}release").as_str())
-        });
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .summary("Pebble - New Mail")
+        .body(body)
+        .appname("Pebble")
+        .auto_icon()
+        .action("default", "Open");
 
-    if is_dev_build_dir {
-        tauri_winrt_notification::Toast::POWERSHELL_APP_ID.to_string()
+    let handle = notification.show().map_err(|e| e.to_string())?;
+    let app_handle = app.clone();
+    let account_id = account_id.to_string();
+    let message_id = message_id.to_string();
+
+    std::thread::Builder::new()
+        .name("pebble-notification-open".to_string())
+        .spawn(move || {
+            handle.wait_for_action(|action| {
+                if is_notification_open_action(action) {
+                    open_message_from_notification(&app_handle, &account_id, &message_id);
+                }
+            });
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_notification_open_response(
+    response: &mac_notification_sys::NotificationResponse,
+) -> bool {
+    matches!(
+        response,
+        mac_notification_sys::NotificationResponse::Click
+            | mac_notification_sys::NotificationResponse::ActionButton(_)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn show_macos_new_mail_notification(
+    app: &tauri::AppHandle,
+    body: &str,
+    account_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    notifications::ensure_notification_environment(app)?;
+
+    let app_handle = app.clone();
+    let account_id = account_id.to_string();
+    let message_id = message_id.to_string();
+    let body = body.to_string();
+    let app_id = if tauri::is_dev() {
+        "com.apple.Terminal".to_string()
     } else {
         app.config().identifier.clone()
-    }
+    };
+
+    std::thread::Builder::new()
+        .name("pebble-notification-open".to_string())
+        .spawn(move || {
+            let _ = mac_notification_sys::set_application(&app_id);
+            let mut notification = mac_notification_sys::Notification::new();
+            notification
+                .title("Pebble - New Mail")
+                .message(&body)
+                .main_button(mac_notification_sys::MainButton::SingleAction("Open"))
+                .wait_for_click(true);
+
+            match notification.send() {
+                Ok(response) if is_macos_notification_open_response(&response) => {
+                    open_message_from_notification(&app_handle, &account_id, &message_id);
+                }
+                Ok(_) => {}
+                Err(e) => warn!("Failed to show clickable macOS notification: {e}"),
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(windows)]
@@ -173,15 +261,23 @@ fn show_windows_new_mail_notification(
     account_id: &str,
     message_id: &str,
 ) -> Result<(), String> {
+    notifications::ensure_notification_environment(app)?;
     let app_handle = app.clone();
     let account_id = account_id.to_string();
     let message_id = message_id.to_string();
-    tauri_winrt_notification::Toast::new(&windows_notification_app_id(app))
+    tauri_winrt_notification::Toast::new(&notifications::windows_notification_app_id(app))
         .title("Pebble - New Mail")
         .text1(body)
         .duration(tauri_winrt_notification::Duration::Short)
-        .on_activated(move |_action| {
-            open_message_from_notification(&app_handle, &account_id, &message_id);
+        .add_button("Open", NOTIFICATION_OPEN_ACTION)
+        .on_activated(move |action| {
+            if action
+                .as_deref()
+                .map(is_notification_open_action)
+                .unwrap_or(true)
+            {
+                open_message_from_notification(&app_handle, &account_id, &message_id);
+            }
             Ok(())
         })
         .show()
@@ -210,7 +306,17 @@ fn show_new_mail_notification(
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        show_linux_new_mail_notification(app, &body, &stored.message.account_id, &stored.message.id)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        show_macos_new_mail_notification(app, &body, &stored.message.account_id, &stored.message.id)
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
     {
         show_default_new_mail_notification(app, &body)
     }
@@ -234,6 +340,7 @@ fn maybe_send_new_mail_notification(
             if let Err(e) = show_new_mail_notification(app, stored) {
                 warn!("Failed to show new mail notification: {e}");
             }
+            notifications::mark_attention_indicator(app);
         }
         Ok(false) => {}
         Err(e) => warn!(
@@ -241,6 +348,50 @@ fn maybe_send_new_mail_notification(
             stored.message.id
         ),
     }
+}
+
+/// Replay crash-recovery search operations. Only operations that were applied
+/// successfully are eligible for clearing, and their markers remain durable
+/// until the Tantivy commit itself succeeds.
+pub(crate) fn recover_pending_search_operations(
+    store: &Store,
+    search: &TantivySearch,
+) -> pebble_core::Result<usize> {
+    let pending = store.list_search_pending()?;
+    let mut applied_ids = Vec::with_capacity(pending.len());
+    for (message_id, operation) in pending {
+        let result = if operation == "remove" {
+            search.remove_message(&message_id)
+        } else {
+            match store.get_message(&message_id) {
+                Ok(Some(message)) if !message.is_deleted => {
+                    match store.get_message_folder_ids(&message_id) {
+                        Ok(folder_ids) if !folder_ids.is_empty() => {
+                            search.index_message(&message, &folder_ids)
+                        }
+                        Ok(_) => search.remove_message(&message_id),
+                        Err(error) => Err(error),
+                    }
+                }
+                Ok(_) => search.remove_message(&message_id),
+                Err(error) => Err(error),
+            }
+        };
+        match result {
+            Ok(()) => applied_ids.push(message_id),
+            Err(error) => warn!(
+                "Failed to recover search operation for message {}: {}",
+                message_id, error
+            ),
+        }
+    }
+
+    if applied_ids.is_empty() {
+        return Ok(0);
+    }
+    search.commit()?;
+    store.clear_search_pending(&applied_ids)?;
+    Ok(applied_ids.len())
 }
 
 pub async fn index_new_messages(
@@ -271,6 +422,7 @@ pub async fn index_new_messages(
     }
 
     let mut pending = 0u32;
+    let mut reconciliation_pending_ids = Vec::new();
     loop {
         let stored = match tokio::time::timeout(
             tokio::time::Duration::from_secs(COMMIT_IDLE_SECS),
@@ -282,10 +434,15 @@ pub async fn index_new_messages(
             Ok(None) => break,
             Err(_) => {
                 if pending > 0 {
-                    if let Err(e) = search.commit() {
+                    if let Err(e) = commit_search_batch_and_clear_recovery(
+                        search,
+                        store,
+                        &mut reconciliation_pending_ids,
+                    ) {
                         error!("Failed to commit search index after idle flush: {}", e);
+                    } else {
+                        pending = 0;
                     }
-                    pending = 0;
                 }
                 // Idle — take the opportunity to refresh rules.
                 engine = load_engine(store);
@@ -293,21 +450,23 @@ pub async fn index_new_messages(
             }
         };
 
-        if let Some(ref app) = app {
-            let _ = app.emit(events::MAIL_NEW, new_mail_event_payload(&stored));
-            maybe_send_new_mail_notification(app, store, &stored);
-        }
+        if !stored.reconciliation {
+            if let Some(ref app) = app {
+                let _ = app.emit(events::MAIL_NEW, new_mail_event_payload(&stored));
+                maybe_send_new_mail_notification(app, store, &stored);
+            }
 
-        if let Some(ref engine) = engine {
-            let actions = engine.evaluate(&stored.message);
-            for action in actions {
-                if let Err(e) = apply_rule_action(
-                    store,
-                    &stored.message.account_id,
-                    &stored.message.id,
-                    &action,
-                ) {
-                    warn!("Rule action failed for message {}: {e}", stored.message.id);
+            if let Some(ref engine) = engine {
+                let actions = engine.evaluate(&stored.message);
+                for action in actions {
+                    if let Err(e) = apply_rule_action(
+                        store,
+                        &stored.message.account_id,
+                        &stored.message.id,
+                        &action,
+                    ) {
+                        warn!("Rule action failed for message {}: {e}", stored.message.id);
+                    }
                 }
             }
         }
@@ -360,22 +519,57 @@ pub async fn index_new_messages(
                 }
             }
         }
+        if stored.reconciliation
+            && !reconciliation_pending_ids
+                .iter()
+                .any(|pending_id| pending_id == &message_id)
+        {
+            reconciliation_pending_ids.push(message_id);
+        }
         pending += 1;
 
         if pending >= COMMIT_BATCH_SIZE {
-            if let Err(e) = search.commit() {
+            if let Err(e) = commit_search_batch_and_clear_recovery(
+                search,
+                store,
+                &mut reconciliation_pending_ids,
+            ) {
                 error!("Failed to commit search index: {}", e);
+            } else {
+                pending = 0;
             }
-            pending = 0;
             engine = load_engine(store);
         }
     }
 
     if pending > 0 {
-        if let Err(e) = search.commit() {
+        if let Err(e) =
+            commit_search_batch_and_clear_recovery(search, store, &mut reconciliation_pending_ids)
+        {
             error!("Failed to commit search index on close: {}", e);
         }
     }
+}
+
+fn commit_search_batch_and_clear_recovery(
+    search: &TantivySearch,
+    store: &Store,
+    reconciliation_pending_ids: &mut Vec<String>,
+) -> pebble_core::Result<()> {
+    finalize_recovery_markers_after_commit(store, reconciliation_pending_ids, || search.commit())
+}
+
+fn finalize_recovery_markers_after_commit(
+    store: &Store,
+    reconciliation_pending_ids: &mut Vec<String>,
+    commit: impl FnOnce() -> pebble_core::Result<()>,
+) -> pebble_core::Result<()> {
+    commit()?;
+    if !reconciliation_pending_ids.is_empty() {
+        store.clear_search_pending(reconciliation_pending_ids)?;
+        reconciliation_pending_ids.clear();
+    }
+    Ok(())
 }
 
 /// Apply a single rule action to a message.
@@ -476,6 +670,9 @@ fn queue_remote_rule_action(
     let Some(message) = store.get_message(message_id)? else {
         return Ok(false);
     };
+    if account.provider == ProviderType::Pop3 {
+        return Ok(false);
+    }
     let source_folder = store
         .get_message_folder_ids(message_id)?
         .into_iter()
@@ -569,12 +766,16 @@ fn queue_remote_rule_action(
 
 #[cfg(test)]
 mod rule_writeback_tests {
+    #[cfg(any(target_os = "linux", windows))]
+    use super::is_notification_open_action;
     use super::{
-        apply_rule_action, new_mail_event_payload, notification_open_payload,
+        apply_rule_action, finalize_recovery_markers_after_commit, new_mail_event_payload,
+        notification_open_payload, recover_pending_search_operations,
         should_send_new_mail_notification,
     };
     use pebble_core::*;
     use pebble_rules::types::RuleAction;
+    use pebble_search::TantivySearch;
     use pebble_store::pending_ops::PendingMailOpStatus;
     use pebble_store::Store;
     use serde_json::Value;
@@ -582,9 +783,12 @@ mod rule_writeback_tests {
     fn test_account() -> Account {
         let now = now_timestamp();
         Account {
+            account_label: None,
+            provider_display_name: None,
             id: new_id(),
             email: "test@example.com".to_string(),
             display_name: "Test".to_string(),
+            color: None,
             provider: ProviderType::Gmail,
             created_at: now,
             updated_at: now,
@@ -625,6 +829,7 @@ mod rule_writeback_tests {
             message,
             folder_ids: vec!["folder-inbox".to_string()],
             notify: true,
+            reconciliation: false,
         };
 
         let payload = new_mail_event_payload(&stored);
@@ -701,6 +906,51 @@ mod rule_writeback_tests {
     }
 
     #[test]
+    fn reconciliation_marker_survives_failed_search_commit() {
+        let store = Store::open_in_memory().unwrap();
+        let message_id = "reconcile-message".to_string();
+        store
+            .add_search_pending(std::slice::from_ref(&message_id), "remove")
+            .unwrap();
+        let mut ids = vec![message_id.clone()];
+
+        let result = finalize_recovery_markers_after_commit(&store, &mut ids, || {
+            Err(PebbleError::Internal("injected commit failure".to_string()))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(ids, vec![message_id.clone()]);
+        assert_eq!(
+            store.list_search_pending().unwrap(),
+            vec![(message_id, "remove".to_string())]
+        );
+    }
+
+    #[test]
+    fn startup_search_recovery_commits_before_clearing_markers() {
+        let store = Store::open_in_memory().unwrap();
+        let search = TantivySearch::open_in_memory().unwrap();
+        let account = test_account();
+        store.insert_account(&account).unwrap();
+        let folder = test_folder(&account.id);
+        store.insert_folder(&folder).unwrap();
+        let message = test_message(&account.id);
+        store
+            .insert_message(&message, std::slice::from_ref(&folder.id))
+            .unwrap();
+        store
+            .add_search_pending(std::slice::from_ref(&message.id), "index")
+            .unwrap();
+
+        assert_eq!(
+            recover_pending_search_operations(&store, &search).unwrap(),
+            1
+        );
+        assert!(store.list_search_pending().unwrap().is_empty());
+        assert_eq!(search.search("Test", 10).unwrap().len(), 1);
+    }
+
+    #[test]
     fn initial_sync_messages_do_not_trigger_new_mail_notifications() {
         let store = Store::open_in_memory().unwrap();
         let account = test_account();
@@ -712,6 +962,7 @@ mod rule_writeback_tests {
             message,
             folder_ids: vec![folder.id],
             notify: false,
+            reconciliation: false,
         };
 
         assert!(!should_send_new_mail_notification(&store, &stored).unwrap());
@@ -729,6 +980,7 @@ mod rule_writeback_tests {
             message,
             folder_ids: vec![folder.id],
             notify: true,
+            reconciliation: false,
         };
 
         assert!(should_send_new_mail_notification(&store, &stored).unwrap());
@@ -740,6 +992,15 @@ mod rule_writeback_tests {
 
         assert_eq!(payload["account_id"], "account-2");
         assert_eq!(payload["message_id"], "message-1");
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn notification_open_action_accepts_desktop_clicks_only() {
+        assert!(is_notification_open_action("default"));
+        assert!(is_notification_open_action("open"));
+        assert!(!is_notification_open_action("__closed"));
+        assert!(!is_notification_open_action("dismissed"));
     }
 
     #[test]
@@ -760,6 +1021,25 @@ mod rule_writeback_tests {
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].op_type, "update_flags");
         assert_eq!(ops[0].status, PendingMailOpStatus::Pending);
+    }
+
+    #[test]
+    fn rule_mark_read_for_pop3_account_commits_locally_without_pending_op() {
+        let store = Store::open_in_memory().unwrap();
+        let mut account = test_account();
+        account.provider = ProviderType::Pop3;
+        store.insert_account(&account).unwrap();
+        let folder = test_folder(&account.id);
+        store.insert_folder(&folder).unwrap();
+        let message = test_message(&account.id);
+        store.insert_message(&message, &[folder.id]).unwrap();
+
+        apply_rule_action(&store, &account.id, &message.id, &RuleAction::MarkRead).unwrap();
+
+        let reloaded = store.get_message(&message.id).unwrap().unwrap();
+        assert!(reloaded.is_read);
+        let ops = store.list_pending_mail_ops(&account.id).unwrap();
+        assert!(ops.is_empty());
     }
 
     #[test]

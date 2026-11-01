@@ -172,6 +172,7 @@ export function useKeyboard() {
                 if (result === "skipped") return;
                 queryClient.invalidateQueries({ queryKey: ["messages"] });
                 queryClient.invalidateQueries({ queryKey: ["threads"] });
+                queryClient.invalidateQueries({ queryKey: ["folder-unread-counts"] });
                 const msg = result === "unarchived" ? i18n.t("messageActions.unarchiveSuccess", "Message moved to inbox") : i18n.t("messageActions.archiveSuccess", "Message archived");
                 useToastStore.getState().addToast({ message: msg, type: "success" });
               })
@@ -280,6 +281,12 @@ export function useKeyboard() {
           setNotificationsEnabled(!notificationsEnabled);
           break;
         }
+        case "translate-selection":
+          document.dispatchEvent(new CustomEvent("pebble:translate-selection"));
+          break;
+        case "toggle-bilingual":
+          document.dispatchEvent(new CustomEvent("pebble:toggle-bilingual"));
+          break;
         default:
           break;
       }

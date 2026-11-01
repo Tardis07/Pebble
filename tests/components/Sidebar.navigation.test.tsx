@@ -27,6 +27,7 @@ vi.mock("react-i18next", () => ({
         "sidebar.archive": "Archive",
         "sidebar.spam": "Spam",
         "sidebar.starred": "Starred",
+        "sidebar.contacts": "Contacts",
         "sidebar.snoozed": "Snoozed",
         "sidebar.kanban": "Kanban",
         "sidebar.settings": "Settings",
@@ -79,6 +80,7 @@ describe("Sidebar navigation", () => {
       activeView: "compose",
       previousView: "inbox",
       showFolderUnreadCount: false,
+      sidebarStyle: "grouped",
     });
     useMailStore.setState({
       activeAccountId: "account-1",
@@ -94,6 +96,41 @@ describe("Sidebar navigation", () => {
     useConfirmStore.setState({
       confirm: vi.fn().mockResolvedValue(true),
     });
+  });
+
+  it.each([
+    ["Contacts", "contacts"],
+    ["Snoozed", "snoozed"],
+    ["Kanban", "kanban"],
+    ["Settings", "settings"],
+  ] as const)("switches to the %s view from the bottom navigation", async (label, view) => {
+    useUIStore.setState({ activeView: "inbox" });
+    useComposeStore.setState({ composeDirty: false, composeMode: null });
+
+    render(<Sidebar />);
+
+    fireEvent.click(screen.getByRole("button", { name: label }));
+
+    await waitFor(() => {
+      expect(useUIStore.getState().activeView).toBe(view);
+    });
+  });
+
+  it("keeps the sidebar from shrinking under wide message content", () => {
+    render(<Sidebar />);
+
+    const sidebar = screen.getByLabelText("Sidebar");
+
+    expect(sidebar.style.flexShrink).toBe("0");
+  });
+
+  it("uses non-submit buttons for bottom navigation actions", () => {
+    render(<Sidebar />);
+
+    expect(screen.getByRole("button", { name: "Snoozed" }).getAttribute("type")).toBe("button");
+    expect(screen.getByRole("button", { name: "Contacts" }).getAttribute("type")).toBe("button");
+    expect(screen.getByRole("button", { name: "Kanban" }).getAttribute("type")).toBe("button");
+    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("type")).toBe("button");
   });
 
   it("leaves a dirty compose draft after confirming sidebar navigation", async () => {

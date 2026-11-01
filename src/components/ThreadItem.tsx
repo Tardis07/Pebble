@@ -25,21 +25,19 @@ function formatDate(timestamp: number): string {
 function ThreadItem({ thread, isSelected, onClick }: Props) {
   const { t } = useTranslation();
   const hasUnread = thread.unread_count > 0;
-  const fontWeight = hasUnread ? "600" : "normal";
   const participantText = thread.participants.slice(0, 3).join(", ") +
     (thread.participants.length > 3 ? ` +${thread.participants.length - 3}` : "");
 
   return (
     <div
+      className={`thread-list-row${hasUnread ? " thread-list-row--unread" : ""}`}
       role="option"
       aria-selected={isSelected}
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } }}
       style={{
-        backgroundColor: isSelected ? "var(--color-sidebar-active)" : "transparent",
         color: "var(--color-text-primary)",
-        fontWeight,
         cursor: "pointer",
         padding: "10px 14px",
         borderBottom: "1px solid var(--color-border)",
@@ -48,29 +46,32 @@ function ThreadItem({ thread, isSelected, onClick }: Props) {
         overflow: "hidden",
         transition: "background-color 0.12s ease",
       }}
-      onMouseEnter={(e) => {
-        if (!isSelected) e.currentTarget.style.backgroundColor = "var(--color-bg-hover)";
-      }}
-      onMouseLeave={(e) => {
-        if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
-      }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" }}>
         <span
           style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
             fontSize: "13px",
+            fontWeight: "600",
             overflow: "hidden",
-            textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             flex: 1,
             marginRight: "8px",
+            minWidth: 0,
           }}
         >
-          {participantText}
-          {thread.message_count > 1 && (
-            <span style={{ color: "var(--color-text-secondary)", fontWeight: "normal", marginLeft: "4px" }}>
-              ({thread.message_count})
-            </span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+            {participantText}
+            {thread.message_count > 1 && (
+              <span style={{ color: "var(--color-text-secondary)", fontWeight: "normal", marginLeft: "4px" }}>
+                ({thread.message_count})
+              </span>
+            )}
+          </span>
+          {hasUnread && (
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--color-accent)", flexShrink: 0 }} />
           )}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
@@ -81,7 +82,7 @@ function ThreadItem({ thread, isSelected, onClick }: Props) {
           </span>
         </div>
       </div>
-      <div style={{ fontSize: "12.5px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "2px" }}>
+      <div style={{ fontSize: "12.5px", fontWeight: hasUnread ? "600" : "400", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "2px" }}>
         {thread.subject || t("inbox.noSubject")}
       </div>
       <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: "normal" }}>

@@ -18,6 +18,8 @@ import { useKanbanStore } from "@/stores/kanban.store";
 import { useToastStore } from "@/stores/toast.store";
 import { useUIStore } from "@/stores/ui.store";
 import SelectionActionPopover from "./SelectionActionPopover";
+import ContactAddressAction from "./ContactAddressAction";
+import MessageParticipants from "./MessageParticipants";
 
 interface Props {
   messageId: string;
@@ -37,7 +39,13 @@ function formatFullDate(timestamp: number): string {
 
 export default function MessageDetail({ messageId, onBack, folderRole }: Props) {
   const { t } = useTranslation();
-  const [privacyMode, setPrivacyMode] = useState<PrivacyMode>(() => defaultPrivacyMode());
+  const [privacyOverride, setPrivacyOverride] = useState<{
+    messageId: string;
+    mode: PrivacyMode;
+  }>(() => ({ messageId, mode: defaultPrivacyMode() }));
+  const privacyMode = privacyOverride.messageId === messageId
+    ? privacyOverride.mode
+    : defaultPrivacyMode();
   const [showSnooze, setShowSnooze] = useState(false);
   const [showSelectionActions, setShowSelectionActions] = useState<{ text: string; position: { x: number; y: number } } | null>(null);
   const [showTranslate, setShowTranslate] = useState<{ text: string; position: { x: number; y: number } } | null>(null);
@@ -55,22 +63,23 @@ export default function MessageDetail({ messageId, onBack, folderRole }: Props) 
 
   // Reset bilingual state when messageId changes
   useEffect(() => {
+    setPrivacyOverride({ messageId, mode: defaultPrivacyMode() });
     resetBilingual();
   }, [messageId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleLoadImages() {
-    setPrivacyMode("LoadOnce");
+    setPrivacyOverride({ messageId, mode: "LoadOnce" });
   }
 
   async function handleTrustSender(trustType: "images" | "all") {
     if (message) {
-      if (trustType === "all") {
-        setPrivacyMode({ TrustSender: message.from_address });
-      } else {
-        setPrivacyMode("LoadOnce");
-      }
       try {
         await trustSender(message.account_id, message.from_address, trustType);
+        if (trustType === "all") {
+          setPrivacyOverride({ messageId, mode: { TrustSender: message.from_address } });
+        } else {
+          setPrivacyOverride({ messageId, mode: "LoadOnce" });
+        }
       } catch (err) {
         console.error("Failed to persist trusted sender:", err);
       }
@@ -134,7 +143,7 @@ export default function MessageDetail({ messageId, onBack, folderRole }: Props) 
       if (!kanban.cardIdSet.has(messageId)) {
         await kanban.addCard(messageId, "todo");
       }
-      useKanbanStore.getState().setContextNote(messageId, text);
+      await useKanbanStore.getState().setContextNote(messageId, text);
       useUIStore.getState().setActiveView("kanban");
       useToastStore.getState().addToast({
         message: t("kanban.contextNoteAdded", "Added selected text to Kanban note"),
@@ -155,17 +164,16 @@ export default function MessageDetail({ messageId, onBack, folderRole }: Props) 
     openSelectionActionsForSelection({ x: e.clientX, y: e.clientY }, selectedText);
   }
 
-  function handleContentKeyUp(e: React.KeyboardEvent) {
-    // Keyboard-equivalent entry to the mouse-driven translate popover: T fires
-    // on the current selection regardless of how the selection was built.
-    if (e.key !== "t" && e.key !== "T") return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const target = e.target as HTMLElement | null;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-      return;
-    }
-    openTranslateForSelection();
-  }
+  useEffect(() => {
+    const onTranslate = () => openTranslateForSelection();
+    const onBilingual = () => handleBilingualToggle();
+    document.addEventListener("pebble:translate-selection", onTranslate);
+    document.addEventListener("pebble:toggle-bilingual", onBilingual);
+    return () => {
+      document.removeEventListener("pebble:translate-selection", onTranslate);
+      document.removeEventListener("pebble:toggle-bilingual", onBilingual);
+    };
+  });
 
   if (loading) {
     return <MessageDetailSkeleton />;
@@ -208,13 +216,18 @@ export default function MessageDetail({ messageId, onBack, folderRole }: Props) 
     );
   }
 
+  const contactParticipantsGroups = [
+    { label: t("messageDetail.to", "To:"), participants: message.to_list },
+    { label: t("messageDetail.cc", "Cc:"), participants: message.cc_list },
+  ];
+
   return (
     <div
+      className="message-detail-container"
       style={{
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        backgroundColor: "var(--color-bg)",
       }}
     >
       {/* Header */}
@@ -244,7 +257,7 @@ export default function MessageDetail({ messageId, onBack, folderRole }: Props) 
           </button>
           <h2
             style={{
-              fontSize: "15px",
+              fontSize: "16px",
               fontWeight: "600",
               color: "var(--color-text-primary)",
               overflow: "hidden",
@@ -312,18 +325,49 @@ export default function MessageDetail({ messageId, onBack, folderRole }: Props) 
           onMessageUpdate={setMessage}
         />
         <div style={{ paddingLeft: "32px" }}>
-          <div style={{ fontSize: "13px", color: "var(--color-text-primary)", marginBottom: "2px" }}>
-            <span style={{ fontWeight: "500" }}>
-              {message.from_name || message.from_address}
-            </span>
-            {message.from_name && (
-              <span style={{ color: "var(--color-text-secondary)", marginLeft: "6px" }}>
-                &lt;{message.from_address}&gt;
+          <div
+            style={{
+              backgroundColor: "var(--color-bg-hover)",
+              borderRadius: "8px",
+              padding: "8px 12px",
+              color: "var(--color-text-primary)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "13px",
+                marginBottom: "2px",
+                display: "flex",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "4px",
+              }}
+            >
+              <span style={{ fontWeight: "600" }}>
+                {message.from_name || message.from_address}
               </span>
-            )}
-          </div>
-          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
-            {formatFullDate(message.date)}
+              {message.from_name && (
+                <span style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginLeft: "2px" }}>
+                  &lt;{message.from_address}&gt;
+                </span>
+              )}
+              <ContactAddressAction
+                accountId={message.account_id}
+                name={message.from_name}
+                address={message.from_address}
+              />
+              <span
+                style={{
+                  fontSize: "12px",
+                  color: "var(--color-text-secondary)",
+                  marginLeft: "auto",
+                  flexShrink: 0,
+                }}
+              >
+                {formatFullDate(message.date)}
+              </span>
+            </div>
+            <MessageParticipants accountId={message.account_id} groups={contactParticipantsGroups} />
           </div>
         </div>
       </div>
@@ -345,7 +389,6 @@ export default function MessageDetail({ messageId, onBack, folderRole }: Props) 
         aria-label={t("messageDetail.body", "Message body")}
         style={{ flex: 1, overflow: "auto", padding: "16px" }}
         onContextMenu={handleContextMenu}
-        onKeyUp={handleContentKeyUp}
       >
         {bilingualMode && bilingualLoading ? (
             <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{t("common.translating", "Translating...")}</div>

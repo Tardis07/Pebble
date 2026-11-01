@@ -5,7 +5,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { Markdown as MarkdownExtension } from "tiptap-markdown";
 import TurndownService from "turndown";
 import { getSignature } from "@/lib/signatures";
-import { sanitizeHtml } from "@/lib/sanitizeHtml";
+import { sanitizeComposeQuoteHtml } from "@/lib/sanitizeHtml";
 import type { Message } from "@/lib/ipc-types";
 import type { TFunction } from "i18next";
 
@@ -24,6 +24,7 @@ interface UseComposeEditorArgs {
     rawSource?: string;
     richTextHtml?: string;
   } | null;
+  prefillBody?: string;
 }
 
 interface BuildComposeEditorContentArgs {
@@ -31,11 +32,31 @@ interface BuildComposeEditorContentArgs {
   composeReplyTo: Message | null;
   isReply: boolean;
   signatureHtml: string;
+  prefillBody?: string;
   t: TFunction;
+}
+
+interface BuildReplyQuoteHtmlArgs {
+  composeReplyTo: Message | null;
+  t: TFunction;
+}
+
+interface ShouldApplyInitialEditorContentArgs {
+  editorExists: boolean;
+  initialized: boolean;
+  signatureReady: boolean;
+  hasRestoredDraft: boolean;
 }
 
 function escapeHtml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function plainTextToParagraphs(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim() ? `<p>${escapeHtml(line)}</p>` : "<p><br></p>")
+    .join("");
 }
 
 function parseBodyHtml(html: string) {
@@ -66,7 +87,7 @@ export function extractComposeBodyHtml(html: string) {
       body = parseBodyHtml(decoded);
     }
 
-    return sanitizeHtml(body);
+    return sanitizeComposeQuoteHtml(body);
   } catch {
     return `<p>${escapeHtml(html)}</p>`;
   }
@@ -77,17 +98,12 @@ export function buildComposeEditorContent({
   composeReplyTo,
   isReply,
   signatureHtml,
+  prefillBody,
   t,
 }: BuildComposeEditorContentArgs) {
   try {
     if (isReply && composeReplyTo) {
-      const sender = escapeHtml(composeReplyTo.from_name || composeReplyTo.from_address || "");
-      const dateStr = escapeHtml(new Date((composeReplyTo.date || 0) * 1000).toLocaleString());
-      const body = composeReplyTo.body_html_raw
-        ? extractComposeBodyHtml(composeReplyTo.body_html_raw)
-        : `<p>${escapeHtml(composeReplyTo.body_text || "")}</p>`;
-      const attribution = t("compose.quoteAttribution", { date: dateStr, sender });
-      return `${signatureHtml}<br/><br/><blockquote><p>${escapeHtml(attribution)}</p>${body}</blockquote>`;
+      return `<p><br></p>${signatureHtml}`;
     }
     if (composeMode === "forward" && composeReplyTo) {
       const sender = escapeHtml(composeReplyTo.from_name || composeReplyTo.from_address || "");
@@ -97,11 +113,44 @@ export function buildComposeEditorContent({
         : `<p>${escapeHtml(composeReplyTo.body_text || "")}</p>`;
       return `${signatureHtml}<br/><br/><p>${escapeHtml(t("compose.forwardedHeader"))}</p><p>${escapeHtml(t("compose.forwardedFrom", { sender }))}</p><p>${escapeHtml(t("compose.forwardedSubject", { subject: fwdSubject }))}</p>${body}`;
     }
+    if (composeMode === "new" && prefillBody?.trim()) {
+      return `${plainTextToParagraphs(prefillBody)}${signatureHtml}`;
+    }
     return signatureHtml;
   } catch (err) {
     console.error("[ComposeView] Failed to build editor content:", err);
     return "";
   }
+}
+
+export function buildReplyQuoteHtml({ composeReplyTo, t }: BuildReplyQuoteHtmlArgs) {
+  if (!composeReplyTo) return "";
+
+  const sender = escapeHtml(composeReplyTo.from_name || composeReplyTo.from_address || "");
+  const dateStr = escapeHtml(new Date((composeReplyTo.date || 0) * 1000).toLocaleString());
+  const body = composeReplyTo.body_html_raw
+    ? extractComposeBodyHtml(composeReplyTo.body_html_raw)
+    : `<p>${escapeHtml(composeReplyTo.body_text || "")}</p>`;
+  const attribution = t("compose.quoteAttribution", { date: dateStr, sender });
+
+  return `<blockquote class="compose-original-quote"><p>${escapeHtml(attribution)}</p>${body}</blockquote>`;
+}
+
+export function appendReplyQuoteHtml(bodyHtml: string, quotedReplyHtml: string) {
+  const quote = quotedReplyHtml.trim();
+  if (!quote) return bodyHtml;
+  const body = bodyHtml.trim() || "<p><br></p>";
+  return `${body}<br/><br/>${quote}`;
+}
+
+export function shouldApplyInitialEditorContent({
+  editorExists,
+  initialized,
+  signatureReady,
+  hasRestoredDraft,
+}: ShouldApplyInitialEditorContentArgs) {
+  if (!editorExists || initialized) return false;
+  return hasRestoredDraft || signatureReady;
 }
 
 export function useComposeEditor({
@@ -111,23 +160,53 @@ export function useComposeEditor({
   isReply,
   t,
   restoredDraft,
+  prefillBody,
 }: UseComposeEditorArgs) {
   const [editorMode, setEditorMode] = useState<EditorMode>(restoredDraft?.editorMode ?? "rich");
-  const [rawSource, setRawSource] = useState(restoredDraft?.rawSource ?? "");
+  const [rawSource, setRawSource] = useState(restoredDraft?.rawSource ?? prefillBody ?? "");
   const [richTextHtml, setRichTextHtml] = useState("");
   const [htmlPreview, setHtmlPreview] = useState(false);
+  const [signature, setSignature] = useState("");
+  const [signatureReady, setSignatureReady] = useState(Boolean(restoredDraft));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const contentInitializedRef = useRef(false);
+
+  useEffect(() => {
+    if (restoredDraft) {
+      setSignatureReady(true);
+      return;
+    }
+    let cancelled = false;
+    setSignatureReady(false);
+    getSignature(fromAccountId)
+      .then((loaded) => {
+        if (!cancelled) setSignature(loaded);
+      })
+      .catch((err) => {
+        console.warn("Failed to load signature:", err);
+        if (!cancelled) setSignature("");
+      })
+      .finally(() => {
+        if (!cancelled) setSignatureReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fromAccountId, restoredDraft]);
 
   // Build signature HTML block
   const signatureHtml = useMemo(() => {
-    const sig = getSignature(fromAccountId);
+    const sig = signature;
     if (!sig) return "";
     return `<br/><br/><div style="color:var(--color-text-secondary);font-size:13px">--<br/>${escapeHtml(sig).replace(/\n/g, "<br/>")}</div>`;
-  }, [fromAccountId]);
+  }, [signature]);
 
   const editorContent = useMemo(() => {
-    return buildComposeEditorContent({ composeMode, composeReplyTo, isReply, signatureHtml, t });
-  }, [composeMode, composeReplyTo, isReply, t, signatureHtml]);
+    return buildComposeEditorContent({ composeMode, composeReplyTo, isReply, signatureHtml, prefillBody, t });
+  }, [composeMode, composeReplyTo, isReply, t, signatureHtml, prefillBody]);
+  const quotedReplyHtml = useMemo(() => {
+    return isReply ? buildReplyQuoteHtml({ composeReplyTo, t }) : "";
+  }, [composeReplyTo, isReply, t]);
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -141,14 +220,23 @@ export function useComposeEditor({
 
   // Set editor content after creation to avoid initialization crashes
   useEffect(() => {
-    if (!editor) return;
+    if (!shouldApplyInitialEditorContent({
+      editorExists: Boolean(editor),
+      initialized: contentInitializedRef.current,
+      signatureReady,
+      hasRestoredDraft: Boolean(restoredDraft),
+    }) || !editor) return;
     // If restoring a draft, prefer its richTextHtml over generated editorContent
     if (restoredDraft?.richTextHtml) {
       editor.commands.setContent(restoredDraft.richTextHtml);
     } else if (editorContent) {
       editor.commands.setContent(editorContent);
     }
-  }, [editor, editorContent]);
+    if (isReply && !restoredDraft) {
+      requestAnimationFrame(() => editor.commands.focus("start"));
+    }
+    contentInitializedRef.current = true;
+  }, [editor, editorContent, isReply, restoredDraft, signatureReady]);
 
   useEffect(() => {
     if (!editor) {
@@ -205,5 +293,6 @@ export function useComposeEditor({
     setHtmlPreview,
     switchMode,
     textareaRef,
+    quotedReplyHtml,
   };
 }

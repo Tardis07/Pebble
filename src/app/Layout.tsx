@@ -1,4 +1,5 @@
 import TitleBar from "../components/TitleBar";
+import SenderIdentityNotice from "../components/SenderIdentityNotice";
 import Sidebar from "../components/Sidebar";
 import StatusBar from "../components/StatusBar";
 import ComposeFAB from "../components/ComposeFAB";
@@ -7,23 +8,27 @@ import CommandPalette from "../features/command-palette/CommandPalette";
 import ToastContainer from "../components/ToastContainer";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useConfirmStore } from "../stores/confirm.store";
-import { useUIStore, applyThemeToDom } from "../stores/ui.store";
+import { useComposeStore } from "../stores/compose.store";
+import { useUIStore, applyThemeToDom, resolveTheme } from "../stores/ui.store";
 import { useCommandStore } from "../stores/command.store";
 import { useKanbanStore } from "../stores/kanban.store";
 import { useKeyboard } from "../hooks/useKeyboard";
 import { useNetworkStatus } from "../hooks/useNetworkStatus";
 import { buildCommands } from "../features/command-palette/commands";
-import { useDeferredValue, useEffect, lazy, Suspense, Component, type ReactNode, type ErrorInfo } from "react";
+import { useEffect, lazy, Suspense, Component, type ReactNode, type ErrorInfo } from "react";
 import { createLazyViewPreloader, scheduleLazyViewPreload } from "./lazyViewPreload";
 import { useRealtimePreferenceSync } from "./useRealtimePreferenceSync";
 import { useRealtimeSyncTriggers } from "./useRealtimeSyncTriggers";
 import { useNotificationOpenNavigation } from "./useNotificationOpenNavigation";
 import { useCloseToBackground } from "./useCloseToBackground";
 import { useTrayI18n } from "./useTrayI18n";
+import { useMailtoOpen } from "./useMailtoOpen";
+import AppBackground from "./AppBackground";
 
 const loadSettingsView = () => import("../features/settings/SettingsView");
 const loadComposeView = () => import("../features/compose/ComposeView");
 const loadKanbanView = () => import("../features/kanban/KanbanView");
+const loadContactsView = () => import("../features/contacts/ContactsView");
 const loadSearchView = () => import("../features/search/SearchView");
 const loadSnoozedView = () => import("../features/snoozed/SnoozedView");
 const loadStarredView = () => import("../features/starred/StarredView");
@@ -31,6 +36,7 @@ const preloadLazyViews = createLazyViewPreloader([
   loadSettingsView,
   loadComposeView,
   loadKanbanView,
+  loadContactsView,
   loadSearchView,
   loadSnoozedView,
   loadStarredView,
@@ -39,6 +45,7 @@ const preloadLazyViews = createLazyViewPreloader([
 const SettingsView = lazy(loadSettingsView);
 const ComposeView = lazy(loadComposeView);
 const KanbanView = lazy(loadKanbanView);
+const ContactsView = lazy(loadContactsView);
 const SearchView = lazy(loadSearchView);
 const SnoozedView = lazy(loadSnoozedView);
 const StarredView = lazy(loadStarredView);
@@ -47,13 +54,15 @@ import i18next from "i18next";
 import { WifiOff } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
-import { setNotificationsEnabled as setBackendNotificationsEnabled } from "@/lib/api";
+import { setNotificationsEnabled as setBackendNotificationsEnabled, syncTitlebarTheme } from "@/lib/api";
 
 export default function Layout() {
   const activeView = useUIStore((s) => s.activeView);
-  const displayedView = useDeferredValue(activeView);
+  const displayedView = activeView;
+  const composeKey = useComposeStore((s) => s.composeKey);
   const setActiveView = useUIStore((s) => s.setActiveView);
   const theme = useUIStore((s) => s.theme);
+  const backgroundImage = useUIStore((s) => s.backgroundImage);
   const notificationsEnabled = useUIStore((s) => s.notificationsEnabled);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -73,6 +82,7 @@ export default function Layout() {
   useNotificationOpenNavigation();
   useCloseToBackground();
   useTrayI18n();
+  useMailtoOpen();
 
   // Re-register commands when language changes
   useEffect(() => {
@@ -84,19 +94,6 @@ export default function Layout() {
     setBackendNotificationsEnabled(notificationsEnabled)
       .catch((err) => console.warn("Failed to sync notification preference to backend", err));
   }, [notificationsEnabled]);
-
-  // Global listener: update sync status when backend starts a sync pass
-  useEffect(() => {
-    const unlisten = listen<{ account_id: string; status: string }>("mail:sync-progress", (event) => {
-      const { status } = event.payload;
-      if (status === "started") {
-        useUIStore.getState().setSyncStatus("syncing");
-      } else if (status === "error") {
-        useUIStore.getState().setSyncStatus("error");
-      }
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, []);
 
   // Global listener: refresh data when snoozed messages are restored
   useEffect(() => {
@@ -118,18 +115,26 @@ export default function Layout() {
 
   useEffect(() => {
     applyThemeToDom(theme);
+    syncTitlebarTheme(resolveTheme(theme)).catch(() => {});
     if (theme === "system") {
       const mql = window.matchMedia("(prefers-color-scheme: dark)");
-      const listener = () => applyThemeToDom("system");
+      const listener = () => {
+        applyThemeToDom("system");
+        syncTitlebarTheme(resolveTheme("system")).catch(() => {});
+      };
       mql.addEventListener("change", listener);
       return () => mql.removeEventListener("change", listener);
     }
   }, [theme]);
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div
+      className={`app-shell flex flex-col h-screen overflow-hidden${backgroundImage ? " app-shell--with-background" : ""}`}
+    >
+      <AppBackground image={backgroundImage} />
       <TitleBar />
-      <div className="flex flex-1 min-h-0">
+      <SenderIdentityNotice />
+      <div className="flex flex-1 min-h-0 app-shell-content">
         <Sidebar />
         <main className="flex-1 min-w-0 overflow-auto scroll-region app-main-scroll" style={{ position: "relative" }}>
           <OfflineBanner />
@@ -137,11 +142,12 @@ export default function Layout() {
             <Suspense fallback={<ViewLoadingFallback />}>
               {displayedView === "inbox" && <InboxView />}
               {displayedView === "kanban" && <KanbanView />}
+              {displayedView === "contacts" && <ContactsView />}
               {displayedView === "settings" && <SettingsView />}
               {displayedView === "search" && <SearchView />}
               {displayedView === "snoozed" && <SnoozedView />}
               {displayedView === "starred" && <StarredView />}
-              {displayedView === "compose" && <ComposeView />}
+              {displayedView === "compose" && <ComposeView key={composeKey} />}
             </Suspense>
           </ViewErrorBoundary>
         </main>

@@ -93,9 +93,12 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let now = pebble_core::now_timestamp();
         let account = pebble_core::Account {
+            account_label: None,
+            provider_display_name: None,
             id: pebble_core::new_id(),
             email: "test@example.com".to_string(),
             display_name: "Test".to_string(),
+            color: None,
             provider: pebble_core::ProviderType::Imap,
             created_at: now,
             updated_at: now,

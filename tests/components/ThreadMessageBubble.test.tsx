@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ThreadMessageBubble from "../../src/components/ThreadMessageBubble";
 import type { Message } from "../../src/lib/api";
@@ -6,7 +6,12 @@ import { getRenderedHtml } from "../../src/lib/api";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key,
+    t: (key: string, options?: unknown) => {
+      if (typeof options === "string") return options;
+      const opts = (options ?? {}) as Record<string, string | number>;
+      const template = typeof opts.defaultValue === "string" ? opts.defaultValue : key;
+      return template.replace(/\{\{(\w+)\}\}/g, (_match, name) => String(opts[name] ?? ""));
+    },
   }),
 }));
 
@@ -22,6 +27,12 @@ vi.mock("../../src/components/ShadowDomEmail", () => ({
   ShadowDomEmail: ({ html }: { html: string }) => <div>{html}</div>,
 }));
 
+vi.mock("../../src/components/ContactAddressAction", () => ({
+  default: ({ address }: { address: string }) => (
+    <span data-testid="contact-address-action">{address}</span>
+  ),
+}));
+
 const message: Message = {
   id: "message-1",
   account_id: "account-1",
@@ -35,7 +46,7 @@ const message: Message = {
   from_address: "sender@example.com",
   from_name: "Sender",
   to_list: [{ name: null, address: "user@example.com" }],
-  cc_list: [],
+  cc_list: [{ name: null, address: "cc@example.com" }],
   bcc_list: [],
   has_attachments: false,
   is_read: true,
@@ -52,6 +63,13 @@ const message: Message = {
 };
 
 describe("ThreadMessageBubble", () => {
+  it("shows copied recipients when expanded", () => {
+    render(<ThreadMessageBubble message={message} defaultExpanded />);
+
+    expect(screen.getByText("Cc:")).toBeTruthy();
+    expect(screen.getAllByText("cc@example.com").length).toBeGreaterThan(0);
+  });
+
   it("uses relaxed privacy mode by default when rendering expanded thread messages", async () => {
     localStorage.removeItem("pebble-privacy-mode");
 
@@ -60,5 +78,26 @@ describe("ThreadMessageBubble", () => {
     await waitFor(() => {
       expect(getRenderedHtml).toHaveBeenCalledWith("message-1", "LoadOnce");
     });
+  });
+
+  it("offers contact actions for expanded message participants", () => {
+    render(<ThreadMessageBubble message={message} defaultExpanded />);
+
+    expect(document.querySelectorAll("[data-testid='contact-address-action']")).toHaveLength(3);
+  });
+
+  it("collapses bulk recipient lists when expanded", () => {
+    const bulk: Message = {
+      ...message,
+      to_list: Array.from({ length: 10 }, (_, index) => ({ name: null, address: `bulk${index}@example.com` })),
+      cc_list: [],
+    };
+    render(<ThreadMessageBubble message={bulk} defaultExpanded />);
+
+    expect(document.querySelectorAll("[data-testid='contact-address-action']")).toHaveLength(4);
+
+    fireEvent.click(screen.getByRole("button", { name: "+7 more" }));
+
+    expect(document.querySelectorAll("[data-testid='contact-address-action']")).toHaveLength(11);
   });
 });

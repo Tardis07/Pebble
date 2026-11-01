@@ -1,6 +1,6 @@
 [package]
 name = "pebble"
-version = "0.0.1"
+version = "0.1.5"
 edition = "2021"
 
 [lib]
@@ -26,12 +26,24 @@ pebble-translate = { path = "../crates/pebble-translate" }
 pebble-crypto = { path = "../crates/pebble-crypto" }
 pebble-oauth = { path = "../crates/pebble-oauth" }
 tauri-plugin-notification = "2"
+tauri-plugin-deep-link = "2"
 lettre = { workspace = true }
 reqwest = { workspace = true }
 semver = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"
+windows-registry = "0.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-autostart = "2"
 
 [build-dependencies]
 tauri-build = { workspace = true }

@@ -1,15 +1,28 @@
 import { create } from "zustand";
 import i18n from "@/lib/i18n";
+import { getInitialLanguage, LANGUAGE_STORAGE_KEY, type Language } from "@/lib/language";
+import { profileLocalStorage, profileSessionStorage } from "@/lib/profileStorage";
+import { readStartHiddenToTrayPreference, START_HIDDEN_TO_TRAY_KEY } from "@/lib/startupVisibility";
 import { useComposeStore } from "./compose.store";
 import { useMailStore } from "./mail.store";
 
-export type ActiveView = "inbox" | "kanban" | "settings" | "search" | "snoozed" | "starred" | "compose";
-export type SettingsTab = "accounts" | "general" | "appearance" | "privacy" | "rules" | "remoteWrites" | "translation" | "shortcuts" | "cloudSync" | "about";
+export type ActiveView = "inbox" | "kanban" | "contacts" | "settings" | "search" | "snoozed" | "starred" | "compose";
+export type SettingsTab = "accounts" | "general" | "proxy" | "appearance" | "privacy" | "rules" | "remoteWrites" | "translation" | "shortcuts" | "cloudSync" | "about";
 export type Theme = "light" | "dark" | "system";
-export type Language = "en" | "zh";
+export type { Language } from "@/lib/language";
 export type NetworkStatus = "online" | "offline";
 export type RealtimeMode = "realtime" | "polling" | "manual" | "backoff" | "offline" | "auth_required" | "error";
 export type RealtimePreference = "realtime" | "balanced" | "battery" | "manual";
+export type BackgroundImageFit = "cover" | "contain" | "repeat";
+export type SidebarStyle = "grouped" | "classic";
+
+export interface BackgroundImageSettings {
+  path: string;
+  filename: string;
+  fit: BackgroundImageFit;
+  opacity: number;
+  updatedAt: number;
+}
 
 export interface RealtimeStatus {
   account_id: string;
@@ -24,21 +37,68 @@ const REALTIME_PREFERENCE_KEY = "pebble-realtime-mode";
 const REALTIME_PREFERENCES = new Set<RealtimePreference>(["realtime", "balanced", "battery", "manual"]);
 const NOTIFICATIONS_KEY = "pebble-notifications-enabled";
 const KEEP_RUNNING_BACKGROUND_KEY = "pebble-keep-running-background";
+export const BACKGROUND_IMAGE_STORAGE_KEY = "pebble-background-image-settings";
+const BACKGROUND_IMAGE_FITS = new Set<BackgroundImageFit>(["cover", "contain", "repeat"]);
+const DEFAULT_BACKGROUND_IMAGE_FIT: BackgroundImageFit = "cover";
+const DEFAULT_BACKGROUND_IMAGE_OPACITY = 0.35;
+const MIN_BACKGROUND_IMAGE_OPACITY = 0.05;
+const MAX_BACKGROUND_IMAGE_OPACITY = 1;
+const SIDEBAR_STYLE_KEY = "pebble-sidebar-style";
+
+function readSidebarStyle(): SidebarStyle {
+  return profileLocalStorage.getItem(SIDEBAR_STYLE_KEY) === "classic" ? "classic" : "grouped";
+}
 
 function readRealtimePreference(): RealtimePreference {
-  const stored = localStorage.getItem(REALTIME_PREFERENCE_KEY);
+  const stored = profileLocalStorage.getItem(REALTIME_PREFERENCE_KEY);
   return REALTIME_PREFERENCES.has(stored as RealtimePreference)
     ? (stored as RealtimePreference)
     : "realtime";
 }
 
+function clampBackgroundImageOpacity(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_BACKGROUND_IMAGE_OPACITY;
+  return Math.min(MAX_BACKGROUND_IMAGE_OPACITY, Math.max(MIN_BACKGROUND_IMAGE_OPACITY, value));
+}
+
+function readBackgroundImageSettings(): BackgroundImageSettings | null {
+  const stored = profileLocalStorage.getItem(BACKGROUND_IMAGE_STORAGE_KEY);
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored) as Partial<BackgroundImageSettings>;
+    if (!parsed || typeof parsed.path !== "string" || typeof parsed.filename !== "string") {
+      return null;
+    }
+    const fit = BACKGROUND_IMAGE_FITS.has(parsed.fit as BackgroundImageFit)
+      ? parsed.fit as BackgroundImageFit
+      : DEFAULT_BACKGROUND_IMAGE_FIT;
+    return {
+      path: parsed.path,
+      filename: parsed.filename,
+      fit,
+      opacity: clampBackgroundImageOpacity(Number(parsed.opacity ?? DEFAULT_BACKGROUND_IMAGE_OPACITY)),
+      updatedAt: Number.isFinite(Number(parsed.updatedAt)) ? Number(parsed.updatedAt) : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistBackgroundImageSettings(settings: BackgroundImageSettings | null) {
+  if (!settings) {
+    profileLocalStorage.removeItem(BACKGROUND_IMAGE_STORAGE_KEY);
+    return;
+  }
+  profileLocalStorage.setItem(BACKGROUND_IMAGE_STORAGE_KEY, JSON.stringify(settings));
+}
+
 export function readNotificationsEnabledPreference(): boolean {
-  const stored = localStorage.getItem(NOTIFICATIONS_KEY);
+  const stored = profileLocalStorage.getItem(NOTIFICATIONS_KEY);
   return stored === null ? true : stored === "true";
 }
 
 export function readKeepRunningInBackgroundPreference(): boolean {
-  const stored = localStorage.getItem(KEEP_RUNNING_BACKGROUND_KEY);
+  const stored = profileLocalStorage.getItem(KEEP_RUNNING_BACKGROUND_KEY);
   return stored === null ? true : stored === "true";
 }
 
@@ -58,9 +118,13 @@ export function realtimePreferenceToPollInterval(mode: RealtimePreference): numb
 const initialRealtimeMode = readRealtimePreference();
 const initialNotificationsEnabled = readNotificationsEnabledPreference();
 const initialKeepRunningInBackground = readKeepRunningInBackgroundPreference();
+const initialStartHiddenToTray = readStartHiddenToTrayPreference();
+const initialLanguage = getInitialLanguage();
+const initialBackgroundImage = readBackgroundImageSettings();
+const initialSidebarStyle = readSidebarStyle();
 
 /** Resolve "system" theme to an actual "dark" | "light" value. */
-function resolveTheme(theme: Theme): "dark" | "light" {
+export function resolveTheme(theme: Theme): "dark" | "light" {
   if (theme === "system") {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
@@ -76,6 +140,7 @@ interface UIState {
   sidebarCollapsed: boolean;
   activeView: ActiveView;
   theme: Theme;
+  backgroundImage: BackgroundImageSettings | null;
   language: Language;
   syncStatus: "idle" | "syncing" | "error";
   networkStatus: NetworkStatus;
@@ -86,11 +151,22 @@ interface UIState {
   setNotificationsEnabled: (enabled: boolean) => void;
   keepRunningInBackground: boolean;
   setKeepRunningInBackground: (enabled: boolean) => void;
+  startHiddenToTray: boolean;
+  setStartHiddenToTray: (enabled: boolean) => void;
   previousView: ActiveView;
+  pendingContactId: string | null;
   toggleSidebar: () => void;
   setActiveView: (view: ActiveView) => void;
+  openContactInContacts: (contactId: string) => void;
+  clearPendingContact: () => void;
   openMessageInInbox: (messageId: string) => void;
   setTheme: (theme: Theme) => void;
+  setBackgroundImage: (image: { path: string; filename: string }) => void;
+  setBackgroundImageFit: (fit: BackgroundImageFit) => void;
+  setBackgroundImageOpacity: (opacity: number) => void;
+  clearBackgroundImage: () => void;
+  sidebarStyle: SidebarStyle;
+  setSidebarStyle: (style: SidebarStyle) => void;
   setLanguage: (lang: Language) => void;
   setSyncStatus: (status: "idle" | "syncing" | "error") => void;
   setNetworkStatus: (status: NetworkStatus) => void;
@@ -112,8 +188,9 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   sidebarCollapsed: false,
   activeView: "inbox",
-  theme: (localStorage.getItem("pebble-theme") as Theme) || "light",
-  language: (localStorage.getItem("pebble-language") as Language) || "en",
+  theme: (profileLocalStorage.getItem("pebble-theme") as Theme) || "light",
+  backgroundImage: initialBackgroundImage,
+  language: initialLanguage,
   syncStatus: "idle",
   networkStatus: "online",
   lastMailError: null,
@@ -121,15 +198,21 @@ export const useUIStore = create<UIState>((set) => ({
   realtimeMode: initialRealtimeMode,
   notificationsEnabled: initialNotificationsEnabled,
   setNotificationsEnabled: (enabled) => {
-    localStorage.setItem(NOTIFICATIONS_KEY, String(enabled));
+    profileLocalStorage.setItem(NOTIFICATIONS_KEY, String(enabled));
     set({ notificationsEnabled: enabled });
   },
   keepRunningInBackground: initialKeepRunningInBackground,
   setKeepRunningInBackground: (enabled) => {
-    localStorage.setItem(KEEP_RUNNING_BACKGROUND_KEY, String(enabled));
+    profileLocalStorage.setItem(KEEP_RUNNING_BACKGROUND_KEY, String(enabled));
     set({ keepRunningInBackground: enabled });
   },
+  startHiddenToTray: initialStartHiddenToTray,
+  setStartHiddenToTray: (enabled) => {
+    profileLocalStorage.setItem(START_HIDDEN_TO_TRAY_KEY, String(enabled));
+    set({ startHiddenToTray: enabled });
+  },
   previousView: "inbox",
+  pendingContactId: null,
   toggleSidebar: () =>
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   setActiveView: (view) => {
@@ -138,24 +221,30 @@ export const useUIStore = create<UIState>((set) => ({
       return;
     }
 
-    // Delegate dirty-compose guard to the compose store
     if (state.activeView === "compose" && view !== "compose") {
       const composeState = useComposeStore.getState();
       if (composeState.composeDirty) {
         useComposeStore.setState({ showComposeLeaveConfirm: true, pendingView: view });
         return;
       }
+
       useComposeStore.setState({
         composeMode: null,
         composeReplyTo: null,
+        composePrefill: null,
         composeDirty: false,
+        showComposeLeaveConfirm: false,
+        pendingView: null,
       });
-      set({ activeView: view });
-      return;
     }
 
     set({ activeView: view });
   },
+  openContactInContacts: (contactId) => set({
+    activeView: "contacts",
+    pendingContactId: contactId,
+  }),
+  clearPendingContact: () => set({ pendingContactId: null }),
   openMessageInInbox: (messageId) => {
     useMailStore.setState({
       selectedMessageId: messageId,
@@ -167,13 +256,53 @@ export const useUIStore = create<UIState>((set) => ({
     set({ activeView: "inbox" });
   },
   setTheme: (theme) => {
-    localStorage.setItem("pebble-theme", theme);
+    profileLocalStorage.setItem("pebble-theme", theme);
     applyThemeToDom(theme);
     set({ theme });
   },
+  setBackgroundImage: (image) => {
+    const current = useUIStore.getState().backgroundImage;
+    const next: BackgroundImageSettings = {
+      path: image.path,
+      filename: image.filename,
+      fit: current?.fit ?? DEFAULT_BACKGROUND_IMAGE_FIT,
+      opacity: current?.opacity ?? DEFAULT_BACKGROUND_IMAGE_OPACITY,
+      updatedAt: Date.now(),
+    };
+    persistBackgroundImageSettings(next);
+    set({ backgroundImage: next });
+  },
+  setBackgroundImageFit: (fit) => {
+    if (!BACKGROUND_IMAGE_FITS.has(fit)) return;
+    const current = useUIStore.getState().backgroundImage;
+    if (!current) return;
+    const next = { ...current, fit, updatedAt: Date.now() };
+    persistBackgroundImageSettings(next);
+    set({ backgroundImage: next });
+  },
+  setBackgroundImageOpacity: (opacity) => {
+    const current = useUIStore.getState().backgroundImage;
+    if (!current) return;
+    const next = {
+      ...current,
+      opacity: clampBackgroundImageOpacity(opacity),
+      updatedAt: Date.now(),
+    };
+    persistBackgroundImageSettings(next);
+    set({ backgroundImage: next });
+  },
+  clearBackgroundImage: () => {
+    persistBackgroundImageSettings(null);
+    set({ backgroundImage: null });
+  },
+  sidebarStyle: initialSidebarStyle,
+  setSidebarStyle: (style) => {
+    profileLocalStorage.setItem(SIDEBAR_STYLE_KEY, style);
+    set({ sidebarStyle: style });
+  },
   setLanguage: (lang) => {
     i18n.changeLanguage(lang);
-    localStorage.setItem("pebble-language", lang);
+    profileLocalStorage.setItem(LANGUAGE_STORAGE_KEY, lang);
     set({ language: lang });
   },
   setSyncStatus: (status) => set({ syncStatus: status }),
@@ -188,8 +317,8 @@ export const useUIStore = create<UIState>((set) => ({
     })),
   setRealtimeMode: (mode) => {
     const pollInterval = realtimePreferenceToPollInterval(mode);
-    localStorage.setItem(REALTIME_PREFERENCE_KEY, mode);
-    localStorage.setItem("pebble-poll-interval", String(pollInterval));
+    profileLocalStorage.setItem(REALTIME_PREFERENCE_KEY, mode);
+    profileLocalStorage.setItem("pebble-poll-interval", String(pollInterval));
     set({
       realtimeMode: mode,
       pollInterval,
@@ -197,21 +326,21 @@ export const useUIStore = create<UIState>((set) => ({
   },
   pollInterval: realtimePreferenceToPollInterval(initialRealtimeMode),
   setPollInterval: (secs) => {
-    localStorage.setItem("pebble-poll-interval", String(secs));
+    profileLocalStorage.setItem("pebble-poll-interval", String(secs));
     set({ pollInterval: secs });
   },
   searchQuery: "",
   setSearchQuery: (q) => set({ searchQuery: q }),
-  settingsTab: (sessionStorage.getItem("pebble-settings-tab") as SettingsTab) || "accounts",
+  settingsTab: (profileSessionStorage.getItem("pebble-settings-tab") as SettingsTab) || "accounts",
   setSettingsTab: (tab) => {
-    sessionStorage.setItem("pebble-settings-tab", tab);
+    profileSessionStorage.setItem("pebble-settings-tab", tab);
     set({ settingsTab: tab });
   },
   pendingRuleDraftText: null,
   setPendingRuleDraftText: (text) => set({ pendingRuleDraftText: text }),
-  showFolderUnreadCount: localStorage.getItem("pebble-show-unread-count") === "true",
+  showFolderUnreadCount: profileLocalStorage.getItem("pebble-show-unread-count") === "true",
   setShowFolderUnreadCount: (show) => {
-    localStorage.setItem("pebble-show-unread-count", String(show));
+    profileLocalStorage.setItem("pebble-show-unread-count", String(show));
     set({ showFolderUnreadCount: show });
   },
 }));

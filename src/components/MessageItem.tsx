@@ -2,7 +2,7 @@ import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Star, Paperclip, Archive, LayoutGrid, ShieldAlert, RotateCcw } from "lucide-react";
-import type { Folder, Label, MessageSummary } from "@/lib/api";
+import type { EmailAddress, Folder, Label, MessageSummary } from "@/lib/api";
 import { updateMessageFlags, archiveMessage, moveToFolder } from "@/lib/api";
 import { useKanbanStore } from "@/stores/kanban.store";
 import { useToastStore } from "@/stores/toast.store";
@@ -19,6 +19,8 @@ interface Props {
   onToggleBatchSelect?: (messageId: string) => void;
   spamFolderId?: string;
   folderRole?: Folder["role"];
+  accountColor?: string;
+  accountLabel?: string;
 }
 
 function formatDate(timestamp: number): string {
@@ -36,28 +38,45 @@ function formatDate(timestamp: number): string {
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, batchMode, batchSelected, onToggleBatchSelect, spamFolderId, folderRole }: Props) {
+function addressLabel(address: EmailAddress): string {
+  return address.name?.trim() || address.address;
+}
+
+function recipientLabel(addresses: EmailAddress[]): string {
+  return addresses.map(addressLabel).filter(Boolean).join(", ");
+}
+
+function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, batchMode, batchSelected, onToggleBatchSelect, spamFolderId, folderRole, accountColor, accountLabel }: Props) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [showActions, setShowActions] = useState(false);
-  const fontWeight = message.is_read ? "normal" : "600";
   const inKanban = useKanbanStore((s) => s.cardIdSet.has(message.id));
   const archiveActionLabel = folderRole === "archive"
     ? t("messageActions.unarchive", "Unarchive")
     : t("messageActions.archive", "Archive");
   const ArchiveActionIcon = folderRole === "archive" ? RotateCcw : Archive;
+  const primaryContact = folderRole === "sent" && message.to_list.length > 0
+    ? recipientLabel(message.to_list)
+    : message.from_name || message.from_address;
+
+  function invalidateMessageViews(includeUnreadCounts = false) {
+    queryClient.invalidateQueries({ queryKey: ["messages"] });
+    queryClient.invalidateQueries({ queryKey: ["threads"] });
+    if (includeUnreadCounts) {
+      queryClient.invalidateQueries({ queryKey: ["folder-unread-counts"] });
+    }
+  }
 
   return (
     <div
+      className={`message-list-row${message.is_read ? "" : " message-list-row--unread"}`}
       onClick={onClick}
       tabIndex={0}
       role="option"
       aria-selected={isSelected}
       style={{
         position: "relative",
-        backgroundColor: isSelected ? "var(--color-sidebar-active)" : "transparent",
         color: "var(--color-text-primary)",
-        fontWeight,
         cursor: "pointer",
         padding: "10px 14px",
         borderBottom: "1px solid var(--color-border)",
@@ -66,23 +85,19 @@ function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, 
         overflow: "hidden",
         transition: "background-color 0.12s ease",
       }}
-      onMouseEnter={(e) => {
+      onMouseEnter={() => {
         setShowActions(true);
-        if (!isSelected) e.currentTarget.style.backgroundColor = "var(--color-bg-hover)";
       }}
-      onMouseLeave={(e) => {
+      onMouseLeave={() => {
         setShowActions(false);
-        if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
       }}
-      onFocus={(e) => {
+      onFocus={() => {
         setShowActions(true);
-        if (!isSelected) e.currentTarget.style.backgroundColor = "var(--color-bg-hover)";
       }}
       onBlur={(e) => {
         // Only hide if focus leaves this element entirely (not moving to a child)
         if (!e.currentTarget.contains(e.relatedTarget as Node)) {
           setShowActions(false);
-          if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
         }
       }}
       onKeyDown={(e) => {
@@ -92,6 +107,21 @@ function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, 
         }
       }}
     >
+      {accountColor && (
+        <span
+          aria-label={accountLabel}
+          title={accountLabel}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: "10px",
+            bottom: "10px",
+            width: "3px",
+            borderRadius: "0 3px 3px 0",
+            backgroundColor: accountColor,
+          }}
+        />
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" }}>
         {batchMode && (
           <input
@@ -108,15 +138,24 @@ function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, 
         )}
         <span
           style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
             fontSize: "13px",
+            fontWeight: "600",
             overflow: "hidden",
-            textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             flex: 1,
             marginRight: "8px",
+            minWidth: 0,
           }}
         >
-          {message.from_name || message.from_address}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+            {primaryContact}
+          </span>
+          {!message.is_read && (
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--color-accent)", flexShrink: 0 }} />
+          )}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
           {inKanban && (
@@ -142,6 +181,7 @@ function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, 
       <div
         style={{
           fontSize: "12.5px",
+          fontWeight: message.is_read ? "400" : "600",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -211,8 +251,7 @@ function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, 
                     restoreMessagesCache(queryClient, previousLists);
                     return;
                   }
-                  queryClient.invalidateQueries({ queryKey: ["messages"] });
-                  queryClient.invalidateQueries({ queryKey: ["threads"] });
+                  invalidateMessageViews(true);
                   const msg = result === "unarchived"
                     ? t("messageActions.unarchiveSuccess", "Message moved to inbox")
                     : t("messageActions.archiveSuccess", "Message archived");
@@ -250,8 +289,7 @@ function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, 
                 patchMessagesCache(queryClient, (page) => page.filter((m) => m.id !== message.id));
                 moveToFolder(message.id, spamFolderId)
                   .then(() => {
-                    queryClient.invalidateQueries({ queryKey: ["messages"] });
-                    queryClient.invalidateQueries({ queryKey: ["threads"] });
+                    invalidateMessageViews(true);
                     useToastStore.getState().addToast({ message: t("messageActions.spamSuccess", "Marked as spam"), type: "success" });
                   })
                   .catch(() => {
@@ -305,15 +343,26 @@ function MessageItem({ message, labels = [], isSelected, onClick, onToggleStar, 
           <button
             onClick={(e) => {
               e.stopPropagation();
-              updateMessageFlags(message.id, undefined, !message.is_starred)
+              const nextStarred = !message.is_starred;
+              const previousLists = snapshotMessagesCache(queryClient);
+              onToggleStar?.(message.id, nextStarred);
+              updateMessageFlags(message.id, undefined, nextStarred)
                 .then(() => {
-                  queryClient.invalidateQueries({ queryKey: ["messages"] });
-                  queryClient.invalidateQueries({ queryKey: ["threads"] });
+                  invalidateMessageViews();
                   queryClient.invalidateQueries({ queryKey: ["starred-messages"] });
                   queryClient.invalidateQueries({ queryKey: ["message", message.id] });
                 })
-                .catch(console.error);
-              if (onToggleStar) onToggleStar(message.id, !message.is_starred);
+                .catch(() => {
+                  restoreMessagesCache(queryClient, previousLists);
+                  onToggleStar?.(message.id, message.is_starred);
+                  invalidateMessageViews();
+                  queryClient.invalidateQueries({ queryKey: ["starred-messages"] });
+                  queryClient.invalidateQueries({ queryKey: ["message", message.id] });
+                  const failureMessage = message.is_starred
+                    ? t("messageActions.unstarFailed", "Failed to unstar message")
+                    : t("messageActions.starFailed", "Failed to star message");
+                  useToastStore.getState().addToast({ message: failureMessage, type: "error" });
+                });
             }}
             aria-label={message.is_starred ? t("messageActions.unstar") : t("messageActions.star")}
             aria-pressed={message.is_starred}

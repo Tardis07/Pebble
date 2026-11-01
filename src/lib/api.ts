@@ -3,20 +3,33 @@ import { invoke } from "@tauri-apps/api/core";
 // Re-export all IPC types so existing `import { Foo } from "@/lib/api"` keeps working.
 export type {
   Account,
+  AccountProxyMode,
+  AccountProxySetting,
   AddAccountRequest,
   AdvancedSearchQuery,
   AppLogSnapshot,
   Attachment,
   BackupPreview,
   ConnectionSecurity,
+  Contact,
+  ContactEmail,
+  ContactEmailInput,
+  ContactEmailLabel,
+  ContactInput,
+  ContactSuggestion,
+  ContactSuggestionSource,
   EmailAddress,
   Folder,
+  HttpProxyConfig,
+  ImapSyncFolderSettings,
+  ImportedBackgroundImage,
   KanbanCard,
   KanbanColumnType,
   KnownContact,
   Label,
   Message,
   MessageSummary,
+  NotificationStatus,
   PendingMailOp,
   PendingMailOpsSummary,
   PrivacyMode,
@@ -28,23 +41,32 @@ export type {
   TranslateConfig,
   TranslateResult,
   TrustedSender,
+  VcardImportResult,
 } from "./ipc-types";
 
 import type {
   Account,
+  AccountProxyMode,
+  AccountProxySetting,
   AddAccountRequest,
   AdvancedSearchQuery,
   AppLogSnapshot,
   Attachment,
   BackupPreview,
   ConnectionSecurity,
+  Contact,
+  ContactInput,
+  ContactSuggestion,
   Folder,
+  HttpProxyConfig,
+  ImapSyncFolderSettings,
   KanbanCard,
   KanbanColumnType,
   KnownContact,
   Label,
   Message,
   MessageSummary,
+  NotificationStatus,
   PendingMailOp,
   PendingMailOpsSummary,
   PrivacyMode,
@@ -56,6 +78,7 @@ import type {
   TranslateConfig,
   TranslateResult,
   TrustedSender,
+  VcardImportResult,
 } from "./ipc-types";
 
 // ─── Account API ─────────────────────────────────────────────────────────────
@@ -68,12 +91,76 @@ export async function readAppLog(maxBytes: number): Promise<AppLogSnapshot> {
   return invoke<AppLogSnapshot>("read_app_log", { maxBytes });
 }
 
+export async function getGlobalProxy(): Promise<HttpProxyConfig | null> {
+  return invoke<HttpProxyConfig | null>("get_global_proxy");
+}
+
+export async function getAccountProxy(accountId: string): Promise<HttpProxyConfig | null> {
+  return invoke<HttpProxyConfig | null>("get_account_proxy", { accountId });
+}
+
+export async function getAccountProxySetting(accountId: string): Promise<AccountProxySetting> {
+  return invoke<AccountProxySetting>("get_account_proxy_setting", { accountId });
+}
+
+export async function updateAccountProxy(
+  accountId: string,
+  proxyHost?: string,
+  proxyPort?: number,
+): Promise<void> {
+  return invoke<void>("update_account_proxy", { accountId, proxyHost, proxyPort });
+}
+
+export async function updateAccountProxySetting(
+  accountId: string,
+  mode: AccountProxyMode,
+  proxyHost?: string,
+  proxyPort?: number,
+): Promise<void> {
+  return invoke<void>("update_account_proxy_setting", { accountId, mode, proxyHost, proxyPort });
+}
+
+export async function updateGlobalProxy(
+  proxyHost?: string,
+  proxyPort?: number,
+): Promise<void> {
+  return invoke<void>("update_global_proxy", { proxyHost, proxyPort });
+}
+
 export async function completeOAuthFlow(
   provider: string,
   email: string,
   displayName: string,
+  proxyHost?: string,
+  proxyPort?: number,
+  accountLabel?: string,
 ): Promise<Account> {
-  return invoke<Account>("complete_oauth_flow", { provider, email, displayName });
+  return invoke<Account>("complete_oauth_flow", { provider, email, displayName, proxyHost, proxyPort, accountLabel });
+}
+
+export async function getOAuthAccountProxy(accountId: string): Promise<HttpProxyConfig | null> {
+  return invoke<HttpProxyConfig | null>("get_oauth_account_proxy", { accountId });
+}
+
+export async function getOAuthAccountProxySetting(accountId: string): Promise<AccountProxySetting> {
+  return invoke<AccountProxySetting>("get_oauth_account_proxy_setting", { accountId });
+}
+
+export async function updateOAuthAccountProxy(
+  accountId: string,
+  proxyHost?: string,
+  proxyPort?: number,
+): Promise<void> {
+  return invoke<void>("update_oauth_account_proxy", { accountId, proxyHost, proxyPort });
+}
+
+export async function updateOAuthAccountProxySetting(
+  accountId: string,
+  mode: AccountProxyMode,
+  proxyHost?: string,
+  proxyPort?: number,
+): Promise<void> {
+  return invoke<void>("update_oauth_account_proxy_setting", { accountId, mode, proxyHost, proxyPort });
 }
 
 export async function addAccount(request: AddAccountRequest): Promise<Account> {
@@ -88,13 +175,53 @@ export async function testImapConnection(
   imapHost: string,
   imapPort: number,
   imapSecurity: ConnectionSecurity,
+  acceptInvalidCerts?: boolean,
   proxyHost?: string,
   proxyPort?: number,
   username?: string,
   password?: string,
+  email?: string,
+  allowPlaintext?: boolean,
 ): Promise<string> {
   return invoke<string>("test_imap_connection", {
-    request: { imap_host: imapHost, imap_port: imapPort, imap_security: imapSecurity, proxy_host: proxyHost, proxy_port: proxyPort, username, password },
+    request: {
+      imap_host: imapHost,
+      imap_port: imapPort,
+      imap_security: imapSecurity,
+      accept_invalid_certs: acceptInvalidCerts,
+      proxy_host: proxyHost,
+      proxy_port: proxyPort,
+      username,
+      password,
+      email,
+      allow_plaintext: allowPlaintext,
+    },
+  });
+}
+
+export async function testPop3Connection(
+  pop3Host: string,
+  pop3Port: number,
+  pop3Security: ConnectionSecurity,
+  acceptInvalidCerts?: boolean,
+  proxyHost?: string,
+  proxyPort?: number,
+  username?: string,
+  password?: string,
+  allowPlaintext?: boolean,
+): Promise<string> {
+  return invoke<string>("test_pop3_connection", {
+    request: {
+      pop3_host: pop3Host,
+      pop3_port: pop3Port,
+      pop3_security: pop3Security,
+      accept_invalid_certs: acceptInvalidCerts,
+      proxy_host: proxyHost,
+      proxy_port: proxyPort,
+      username,
+      password,
+      allow_plaintext: allowPlaintext,
+    },
   });
 }
 
@@ -113,13 +240,16 @@ export async function updateAccount(
   smtpPort?: number,
   imapSecurity?: ConnectionSecurity,
   smtpSecurity?: ConnectionSecurity,
+  acceptInvalidCerts?: boolean,
   proxyHost?: string,
   proxyPort?: number,
+  accountColor?: string,
+  accountLabel?: string,
 ): Promise<void> {
   return invoke<void>("update_account", {
     accountId, email, displayName, password,
     imapHost, imapPort, smtpHost, smtpPort, imapSecurity, smtpSecurity,
-    proxyHost, proxyPort,
+    acceptInvalidCerts, proxyHost, proxyPort, accountColor, accountLabel,
   });
 }
 
@@ -131,6 +261,20 @@ export async function deleteAccount(accountId: string): Promise<void> {
 
 export async function listFolders(accountId: string): Promise<Folder[]> {
   return invoke<Folder[]>("list_folders", { accountId });
+}
+
+export async function getImapSyncFolders(accountId: string): Promise<ImapSyncFolderSettings> {
+  return invoke<ImapSyncFolderSettings>("get_imap_sync_folders", { accountId });
+}
+
+export async function updateImapSyncFolders(
+  accountId: string,
+  selectedRemoteIds: string[],
+): Promise<ImapSyncFolderSettings> {
+  return invoke<ImapSyncFolderSettings>("update_imap_sync_folders", {
+    accountId,
+    selectedRemoteIds,
+  });
 }
 
 // ─── Message API ─────────────────────────────────────────────────────────────
@@ -231,6 +375,20 @@ export async function listPendingMailOps(
   return invoke<PendingMailOp[]>("list_pending_mail_ops", { accountId, limit });
 }
 
+export async function openDefaultMailSettings(): Promise<void> {
+  return invoke<void>("open_default_mail_settings");
+}
+
+export async function syncTitlebarTheme(theme: string): Promise<void> {
+  return invoke<void>("sync_titlebar_theme", { theme });
+}
+
+export async function dismissFailedPendingMailOps(
+  accountId: string | null,
+): Promise<number> {
+  return invoke<number>("dismiss_failed_pending_mail_ops", { accountId });
+}
+
 // ─── Trusted Senders API ────────────────────────────────────────────────────
 
 export async function listTrustedSenders(accountId: string): Promise<TrustedSender[]> {
@@ -285,6 +443,22 @@ export async function setNotificationsEnabled(enabled: boolean): Promise<void> {
   return invoke<void>("set_notifications_enabled", { enabled });
 }
 
+export async function setKeepRunningInBackground(enabled: boolean): Promise<void> {
+  return invoke<void>("set_keep_running_in_background", { enabled });
+}
+
+export async function getNotificationStatus(): Promise<NotificationStatus> {
+  return invoke<NotificationStatus>("get_notification_status");
+}
+
+export async function showTestNotification(): Promise<void> {
+  return invoke<void>("show_test_notification");
+}
+
+export async function clearNotificationAttention(): Promise<void> {
+  return invoke<void>("clear_notification_attention");
+}
+
 export async function setTrayMenuLabels(showLabel: string, hideLabel: string, quitLabel: string): Promise<void> {
   return invoke<void>("set_tray_menu_labels", { showLabel, hideLabel, quitLabel });
 }
@@ -319,6 +493,23 @@ export async function listKanbanCards(column?: KanbanColumnType): Promise<Kanban
 
 export async function removeFromKanban(messageId: string): Promise<void> {
   return invoke<void>("remove_from_kanban", { messageId });
+}
+
+export async function listKanbanContextNotes(): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("list_kanban_context_notes");
+}
+
+export async function setKanbanContextNote(
+  messageId: string,
+  note: string,
+): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("set_kanban_context_note", { messageId, note });
+}
+
+export async function mergeKanbanContextNotes(
+  notes: Record<string, string>,
+): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("merge_kanban_context_notes", { notes });
 }
 
 // ─── Snooze API ──────────────────────────────────────────────────────────────
@@ -369,6 +560,14 @@ export async function sendEmail(
   return invoke<void>("send_email", {
     accountId, to, cc, bcc, subject, bodyText, bodyHtml, inReplyTo, attachmentPaths,
   });
+}
+
+export async function stageComposeAttachment(filename: string, bytes: number[]): Promise<string> {
+  return invoke<string>("stage_compose_attachment", { filename, bytes });
+}
+
+export async function cleanupStagedComposeAttachment(path: string): Promise<void> {
+  return invoke<void>("cleanup_staged_compose_attachment", { path });
 }
 
 // ─── Batch Operations ───────────────────────────────────────────────────────
@@ -450,16 +649,61 @@ export async function testWebdavConnection(url: string, username: string, passwo
   return invoke<string>("test_webdav_connection", { url, username, password });
 }
 
-export async function backupToWebdav(url: string, username: string, password: string): Promise<string> {
-  return invoke<string>("backup_to_webdav", { url, username, password });
+export async function backupToWebdav(
+  url: string,
+  username: string,
+  password: string,
+  secretPassphrase?: string,
+): Promise<string> {
+  return invoke<string>("backup_to_webdav", { url, username, password, secretPassphrase });
 }
 
 export async function previewWebdavBackup(url: string, username: string, password: string): Promise<BackupPreview> {
   return invoke<BackupPreview>("preview_webdav_backup", { url, username, password });
 }
 
-export async function restoreFromWebdav(url: string, username: string, password: string): Promise<string> {
-  return invoke<string>("restore_from_webdav", { url, username, password });
+export async function exportBackupFile(secretPassphrase?: string): Promise<string> {
+  return invoke<string>("export_backup_file", { secretPassphrase });
+}
+
+export async function previewBackupFile(data: string): Promise<BackupPreview> {
+  return invoke<BackupPreview>("preview_backup_file", { data });
+}
+
+export async function importBackupFile(data: string, secretPassphrase?: string): Promise<string> {
+  return invoke<string>("import_backup_file", { data, secretPassphrase });
+}
+
+export async function restoreFromWebdav(
+  url: string,
+  username: string,
+  password: string,
+  secretPassphrase?: string,
+): Promise<string> {
+  return invoke<string>("restore_from_webdav", { url, username, password, secretPassphrase });
+}
+
+// ─── Auto Backup API ────────────────────────────────────────────────────────
+
+export interface AutoBackupConfig {
+  url: string;
+  username: string;
+  password: string;
+  secret_passphrase: string | null;
+  interval_minutes: number;
+  enabled: boolean;
+}
+
+export async function saveAutoBackupConfig(config: AutoBackupConfig): Promise<void> {
+  return invoke<void>("save_auto_backup_config", { config });
+}
+
+export async function loadAutoBackupConfig(): Promise<AutoBackupConfig | null> {
+  return invoke<AutoBackupConfig | null>("load_auto_backup_config");
+}
+
+export async function deleteAutoBackupConfig(): Promise<void> {
+  return invoke<void>("delete_auto_backup_config");
 }
 
 // ─── Contacts API ────────────────────────────────────────────────────────────
@@ -470,6 +714,57 @@ export async function searchContacts(
   limit?: number,
 ): Promise<KnownContact[]> {
   return invoke<KnownContact[]>("search_contacts", { accountId, query, limit });
+}
+
+export async function listContacts(
+  query?: string,
+  favoriteOnly = false,
+  limit = 50,
+  offset = 0,
+): Promise<Contact[]> {
+  return invoke<Contact[]>("list_contacts", { query, favoriteOnly, limit, offset });
+}
+
+export async function getContactByEmail(address: string): Promise<Contact | null> {
+  return invoke<Contact | null>("get_contact_by_email", { address });
+}
+
+export async function saveContact(input: ContactInput): Promise<Contact> {
+  return invoke<Contact>("save_contact", { input });
+}
+
+export async function deleteContact(
+  contactId: string,
+  suppressAddresses = false,
+): Promise<void> {
+  return invoke<void>("delete_contact", { contactId, suppressAddresses });
+}
+
+export async function setContactFavorite(
+  contactId: string,
+  isFavorite: boolean,
+): Promise<void> {
+  return invoke<void>("set_contact_favorite", { contactId, isFavorite });
+}
+
+export async function searchContactSuggestions(
+  accountId: string,
+  query: string,
+  limit = 20,
+): Promise<ContactSuggestion[]> {
+  return invoke<ContactSuggestion[]>("search_contact_suggestions", { accountId, query, limit });
+}
+
+export async function suppressContactSuggestion(address: string): Promise<void> {
+  return invoke<void>("suppress_contact_suggestion", { address });
+}
+
+export async function importContactsVcard(data: string): Promise<VcardImportResult> {
+  return invoke<VcardImportResult>("import_contacts_vcard", { data });
+}
+
+export async function exportContactsVcard(): Promise<string> {
+  return invoke<string>("export_contacts_vcard");
 }
 
 // ─── Drafts API ──────────────────────────────────────────────────────────────
@@ -508,4 +803,28 @@ export async function deleteDraft(accountId: string, draftId: string): Promise<v
 
 export async function getFolderUnreadCounts(accountId: string): Promise<Record<string, number>> {
   return invoke("get_folder_unread_counts", { accountId });
+}
+
+// ─── Autostart API ───────────────────────────────────────────────────────────
+
+/** Whether Pebble is registered to launch when the user logs in. */
+export async function getAutostartEnabled(): Promise<boolean> {
+  return invoke<boolean>("get_autostart_enabled");
+}
+
+/** Enable or disable launching Pebble when the user logs in. */
+export async function setAutostartEnabled(enabled: boolean): Promise<void> {
+  return invoke<void>("set_autostart_enabled", { enabled });
+}
+
+export interface OAuthIdentityPreview {
+  account_id: string;
+  previous_email: string;
+  identity: { subject: string; email: string; display_name: string | null };
+}
+export function previewOAuthIdentity(accountId: string): Promise<OAuthIdentityPreview> {
+  return invoke("preview_oauth_identity", { accountId });
+}
+export function applyOAuthIdentity(preview: OAuthIdentityPreview): Promise<Account> {
+  return invoke("apply_oauth_identity", { preview });
 }

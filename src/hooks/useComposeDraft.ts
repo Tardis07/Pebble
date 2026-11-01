@@ -6,6 +6,8 @@ import { hasComposeDraft, type ComposeAttachment } from "@/features/compose/comp
 import type { EditorMode } from "./useComposeEditor";
 
 const DRAFT_STORAGE_KEY = "pebble-compose-draft";
+const MAX_AUTOSAVE_RETRIES = 3;
+const AUTOSAVE_RETRY_BASE_DELAY_MS = 1000;
 
 export interface DraftData {
   accountId: string;
@@ -20,44 +22,61 @@ export interface DraftData {
   savedAt: number;
 }
 
-function saveDraftToStorage(draft: Omit<DraftData, "savedAt">) {
-  try {
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ ...draft, savedAt: Date.now() }));
-  } catch { /* quota exceeded — silently skip */ }
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function composeAttachments(value: unknown): ComposeAttachment[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is ComposeAttachment => {
+    if (!item || typeof item !== "object") return false;
+    const attachment = item as Partial<ComposeAttachment>;
+    return typeof attachment.name === "string"
+      && typeof attachment.path === "string"
+      && typeof attachment.size === "number";
+  });
 }
 
 /**
- * Load the stored compose draft.
- *
- * When `validAccountIds` is provided, the draft is only returned if its
- * `accountId` is in that list — this prevents restoring a draft authored under
- * an account that has since been removed (or silently writing it to the
- * currently-active account, which was a real bug).
+ * Restore a plaintext draft left by older builds so it can be migrated to the
+ * encrypted backend. The caller must keep the local copy until backend save
+ * confirmation, preventing an upgrade from deleting the user's only draft.
  */
 export function loadDraftFromStorage(validAccountIds?: string[]): DraftData | null {
   try {
     const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
     if (!raw) return null;
-    const draft = JSON.parse(raw) as Partial<DraftData>;
-    // Discard drafts older than 24 hours
-    if (!draft.savedAt || Date.now() - draft.savedAt > 24 * 60 * 60 * 1000) {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const draft = parsed as Partial<DraftData>;
+    if (typeof draft.savedAt !== "number" || !Number.isFinite(draft.savedAt)
+      || Date.now() - draft.savedAt > 24 * 60 * 60 * 1000) {
       localStorage.removeItem(DRAFT_STORAGE_KEY);
       return null;
     }
-    // Legacy drafts without accountId: drop them rather than guess.
-    if (!draft.accountId || typeof draft.accountId !== "string") {
+    if (typeof draft.accountId !== "string" || !draft.accountId
+      || (validAccountIds && !validAccountIds.includes(draft.accountId))) {
       localStorage.removeItem(DRAFT_STORAGE_KEY);
       return null;
     }
-    if (validAccountIds && !validAccountIds.includes(draft.accountId)) {
-      localStorage.removeItem(DRAFT_STORAGE_KEY);
-      return null;
-    }
+    const editorMode: EditorMode = draft.editorMode === "markdown" || draft.editorMode === "html"
+      ? draft.editorMode
+      : "rich";
     return {
-      ...draft,
-      attachments: Array.isArray(draft.attachments) ? draft.attachments : [],
-    } as DraftData;
-  } catch { return null; }
+      accountId: draft.accountId,
+      to: stringArray(draft.to),
+      cc: stringArray(draft.cc),
+      bcc: stringArray(draft.bcc),
+      subject: typeof draft.subject === "string" ? draft.subject : "",
+      rawSource: typeof draft.rawSource === "string" ? draft.rawSource : "",
+      richTextHtml: typeof draft.richTextHtml === "string" ? draft.richTextHtml : "",
+      editorMode,
+      attachments: composeAttachments(draft.attachments),
+      savedAt: draft.savedAt,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function clearDraftStorage() {
@@ -75,6 +94,8 @@ interface UseComposeDraftArgs {
   composeMode: string | null;
   fromAccountId: string | null;
   attachments: ComposeAttachment[];
+  /** The current compose was restored from legacy WebView storage. */
+  migrateLegacyDraft?: boolean;
   /** True once the TipTap editor has mounted and populated richTextHtml with
    * its initial content (signature, quoted reply, etc.). Until this flips to
    * true, the snapshot would compare user edits against an empty string and
@@ -84,10 +105,11 @@ interface UseComposeDraftArgs {
 
 export function useComposeDraft({
   to, cc, bcc, subject, rawSource, richTextHtml, editorMode, composeMode, fromAccountId, attachments, editorReady,
+  migrateLegacyDraft = false,
 }: UseComposeDraftArgs) {
   // Snapshot the initial compose state so pre-populated reply/forward
   // fields don't immediately trigger the "unsaved draft" guard.
-  // Deferred until the editor has rendered its initial content — taken once,
+  // Deferred until the editor has rendered its initial content - taken once,
   // in an effect that runs after the first render post-editorReady.
   const initialSnapshot = useRef<{
     to: string[]; cc: string[]; bcc: string[]; subject: string;
@@ -99,7 +121,7 @@ export function useComposeDraft({
       to: [...to], cc: [...cc], bcc: [...bcc], subject,
       rawSource, richTextHtml, attachments: attachments.map((a) => ({ ...a })),
     };
-    // Only depend on editorReady — we want this to run once after mount, not
+    // Only depend on editorReady - we want this to run once after mount, not
     // each time the user edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorReady]);
@@ -121,11 +143,124 @@ export function useComposeDraft({
   const draftIdRef = useRef<string | null>(null);
   const draftAccountRef = useRef<string | null>(null);
   const draftIdsByAccountRef = useRef<Record<string, string>>({});
-  const saveGenerationByAccountRef = useRef<Record<string, number>>({});
+  const queuedSaveByAccountRef = useRef<Record<string, Parameters<typeof saveDraft>[0] | undefined>>({});
+  const saveWorkerByAccountRef = useRef<Record<string, Promise<void> | undefined>>({});
+  const cancelRetryDelayByAccountRef = useRef<Record<string, (() => void) | undefined>>({});
+  const persistenceCancelledRef = useRef(false);
+  const legacyMigrationPendingRef = useRef(migrateLegacyDraft);
   if (draftAccountRef.current !== fromAccountId) {
     draftAccountRef.current = fromAccountId;
     draftIdRef.current = fromAccountId ? draftIdsByAccountRef.current[fromAccountId] ?? null : null;
   }
+
+  function waitForRetryDelay(accountId: string, delayMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (shouldRetry: boolean) => {
+        if (settled) return;
+        settled = true;
+        delete cancelRetryDelayByAccountRef.current[accountId];
+        resolve(shouldRetry);
+      };
+      const timer = setTimeout(() => finish(true), delayMs);
+      cancelRetryDelayByAccountRef.current[accountId] = () => {
+        clearTimeout(timer);
+        finish(false);
+      };
+    });
+  }
+
+  function startSaveWorker(accountId: string) {
+    if (persistenceCancelledRef.current) return;
+    if (saveWorkerByAccountRef.current[accountId]) return;
+    const worker = (async () => {
+      let consecutiveFailures = 0;
+      try {
+        let queued = queuedSaveByAccountRef.current[accountId];
+        while (queued && !persistenceCancelledRef.current) {
+          delete queuedSaveByAccountRef.current[accountId];
+          try {
+            const id = await saveDraft({
+              ...queued,
+              existingDraftId: draftIdsByAccountRef.current[accountId] || undefined,
+            });
+            draftIdsByAccountRef.current[accountId] = id;
+            if (draftAccountRef.current === accountId) {
+              draftIdRef.current = id;
+            }
+            if (legacyMigrationPendingRef.current) {
+              clearDraftStorage();
+              legacyMigrationPendingRef.current = false;
+            }
+            consecutiveFailures = 0;
+          } catch (err) {
+            console.warn("Backend draft save failed:", err);
+            consecutiveFailures += 1;
+            const newerQueued = queuedSaveByAccountRef.current[accountId];
+            if (newerQueued) {
+              queued = newerQueued;
+              consecutiveFailures = 0;
+              continue;
+            }
+            if (persistenceCancelledRef.current
+              || consecutiveFailures > MAX_AUTOSAVE_RETRIES) {
+              break;
+            }
+            queuedSaveByAccountRef.current[accountId] = queued;
+            const shouldRetry = await waitForRetryDelay(
+              accountId,
+              AUTOSAVE_RETRY_BASE_DELAY_MS * 2 ** (consecutiveFailures - 1),
+            );
+            if (!shouldRetry || persistenceCancelledRef.current) break;
+          }
+          const nextQueued = queuedSaveByAccountRef.current[accountId];
+          if (nextQueued && nextQueued !== queued) {
+            consecutiveFailures = 0;
+          }
+          queued = nextQueued;
+        }
+      } finally {
+        delete saveWorkerByAccountRef.current[accountId];
+        if (queuedSaveByAccountRef.current[accountId]) {
+          startSaveWorker(accountId);
+        }
+      }
+    })();
+    saveWorkerByAccountRef.current[accountId] = worker;
+  }
+
+  function queueDraftSave(args: Parameters<typeof saveDraft>[0]) {
+    if (persistenceCancelledRef.current) return;
+    queuedSaveByAccountRef.current[args.accountId] = args;
+    startSaveWorker(args.accountId);
+  }
+
+  const cancelPendingDraftSaves = useCallback(async () => {
+    persistenceCancelledRef.current = true;
+    queuedSaveByAccountRef.current = {};
+    for (const cancelRetryDelay of Object.values(cancelRetryDelayByAccountRef.current)) {
+      cancelRetryDelay?.();
+    }
+    const activeWorkers = Object.values(saveWorkerByAccountRef.current).filter(
+      (worker): worker is Promise<void> => Boolean(worker),
+    );
+    await Promise.allSettled(activeWorkers);
+    const savedDraftIds = { ...draftIdsByAccountRef.current };
+    draftIdsByAccountRef.current = {};
+    draftIdRef.current = null;
+    return savedDraftIds;
+  }, []);
+
+  useEffect(() => {
+    persistenceCancelledRef.current = false;
+    return () => {
+      persistenceCancelledRef.current = true;
+      queuedSaveByAccountRef.current = {};
+      for (const cancelRetryDelay of Object.values(cancelRetryDelayByAccountRef.current)) {
+        cancelRetryDelay?.();
+      }
+    };
+  }, []);
 
   // Track dirty state for leave-protection.
   // Skip until the initial snapshot is captured (i.e. editor ready).
@@ -143,7 +278,8 @@ export function useComposeDraft({
     useComposeStore.getState().setComposeDirty(userChanged);
   }, [arraysEqual, attachments, attachmentsEqual, bcc, cc, rawSource, richTextHtml, subject, to, editorReady]);
 
-  // Auto-save draft to localStorage and backend (debounced 3s)
+  // Auto-save draft to backend (debounced 3s). Do not persist plaintext draft
+  // data in WebView storage.
   useEffect(() => {
     if (!composeMode || !editorReady || !initialSnapshot.current) return;
     const timer = setTimeout(() => {
@@ -155,20 +291,7 @@ export function useComposeDraft({
       });
       if (hasDraft && fromAccountId) {
         const accountIdAtSave = fromAccountId;
-        const generation = (saveGenerationByAccountRef.current[accountIdAtSave] ?? 0) + 1;
-        saveGenerationByAccountRef.current[accountIdAtSave] = generation;
-        saveDraftToStorage({
-          accountId: accountIdAtSave,
-          to,
-          cc,
-          bcc,
-          subject,
-          rawSource,
-          richTextHtml,
-          editorMode,
-          attachments: draftAttachments,
-        });
-        // Also save to backend under the current From account
+        // Save to backend under the current From account.
         {
           // Pick body source based on current editor mode to avoid stale content.
           // For rich text, strip HTML tags to produce a plain-text fallback.
@@ -176,22 +299,12 @@ export function useComposeDraft({
             ? richTextHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
             : rawSource;
           const bodyHtml = editorMode === "rich" ? richTextHtml : (editorMode === "html" ? rawSource : undefined);
-          saveDraft({
+          queueDraftSave({
             accountId: accountIdAtSave,
             to, cc, bcc, subject,
             bodyText,
             bodyHtml: bodyHtml || undefined,
             attachmentPaths: draftAttachments.map((attachment) => attachment.path).filter(Boolean),
-            existingDraftId: draftIdsByAccountRef.current[accountIdAtSave] || undefined,
-          }).then((id) => {
-            if (saveGenerationByAccountRef.current[accountIdAtSave] === generation) {
-              draftIdsByAccountRef.current[accountIdAtSave] = id;
-              if (draftAccountRef.current === accountIdAtSave) {
-                draftIdRef.current = id;
-              }
-            }
-          }).catch((err) => {
-            console.warn("Backend draft save failed:", err);
           });
         }
       }
@@ -199,5 +312,5 @@ export function useComposeDraft({
     return () => clearTimeout(timer);
   }, [attachments, to, cc, bcc, subject, rawSource, richTextHtml, editorMode, composeMode, fromAccountId, editorReady]);
 
-  return { draftIdRef, draftIdsByAccountRef };
+  return { draftIdRef, draftIdsByAccountRef, cancelPendingDraftSaves };
 }

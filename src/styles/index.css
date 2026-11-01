@@ -1,4 +1,5 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
+@source "../**/*.{ts,tsx}";
 
 :root {
   --color-sidebar-bg: #f8f7f5;
@@ -17,6 +18,11 @@
   --color-scrollbar-track: transparent;
   --color-scrollbar-thumb: rgba(26, 26, 26, 0.22);
   --color-scrollbar-thumb-hover: rgba(26, 26, 26, 0.38);
+  --color-email-link: #1d4ed8;
+  --email-content-display: block;
+  --email-content-color: inherit;
+  --email-content-bg: transparent;
+  --email-content-color-scheme: light;
 }
 
 [data-theme="dark"] {
@@ -36,6 +42,10 @@
   --color-scrollbar-track: transparent;
   --color-scrollbar-thumb: rgba(255, 255, 255, 0.22);
   --color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.38);
+  /* Preserve light-authored email colors on every webview, including WebKit. */
+  --email-content-display: inline-block;
+  --email-content-color: #202124;
+  --email-content-bg: #fff;
 }
 
 html, body, #root {
@@ -47,11 +57,59 @@ html, body, #root {
   background: var(--color-main-bg);
 }
 
+.app-shell {
+  position: relative;
+  background: var(--color-main-bg);
+  isolation: isolate;
+}
+
+.app-background-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--color-main-bg);
+}
+
+.app-shell > :not(.app-background-layer) {
+  position: relative;
+  z-index: 1;
+}
+
+.app-shell--with-background {
+  background: transparent;
+}
+
+.app-shell--with-background > [data-tauri-drag-region] {
+  background-color: color-mix(in srgb, var(--color-titlebar-bg) 78%, transparent) !important;
+  backdrop-filter: blur(18px);
+}
+
+.app-shell--with-background .app-shell-content > aside {
+  background-color: color-mix(in srgb, var(--color-sidebar-bg) 76%, transparent) !important;
+  backdrop-filter: blur(18px);
+}
+
+.app-shell--with-background > footer {
+  background-color: color-mix(in srgb, var(--color-statusbar-bg) 76%, transparent) !important;
+  backdrop-filter: blur(18px);
+}
+
+.app-shell--with-background .app-main-scroll {
+  background-color: color-mix(in srgb, var(--color-main-bg) 68%, transparent);
+  backdrop-filter: blur(16px) saturate(1.02);
+}
+
+.app-shell--with-background .settings-panel-scroll {
+  background-color: color-mix(in srgb, var(--color-main-bg) 92%, transparent);
+  border-radius: 0;
+}
+
 input,
 textarea,
 select,
 option {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 input,
@@ -134,6 +192,29 @@ option {
   background: transparent;
 }
 
+.settings-panel-scroll {
+  scrollbar-color: color-mix(in srgb, var(--color-scrollbar-thumb) 86%, transparent) transparent;
+  scrollbar-gutter: stable;
+}
+
+.settings-panel-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 0;
+}
+
+.settings-panel-scroll::-webkit-scrollbar-thumb {
+  min-height: 56px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: color-mix(in srgb, var(--color-scrollbar-thumb) 86%, transparent);
+}
+
+.settings-panel-scroll:hover::-webkit-scrollbar-thumb,
+.settings-panel-scroll:focus-within::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-accent) 62%, transparent);
+}
+
 /* ─── Animations ──────────────────────────────────────────── */
 
 @keyframes fadeIn {
@@ -170,6 +251,43 @@ option {
 .spinner {
   animation: spin 0.8s linear infinite;
   color: var(--color-text-secondary);
+}
+
+.message-detail-container {
+  background-color: var(--color-bg);
+}
+
+.app-shell--with-background .message-detail-container {
+  background-color: transparent;
+}
+
+.message-list-row,
+.thread-list-row {
+  background: transparent;
+}
+
+.message-list-row[aria-selected="true"],
+.thread-list-row[aria-selected="true"] {
+  background: var(--color-sidebar-active);
+}
+
+.message-list-row[aria-selected="false"]:hover,
+.message-list-row[aria-selected="false"]:focus,
+.thread-list-row[aria-selected="false"]:hover,
+.thread-list-row[aria-selected="false"]:focus {
+  background: var(--color-bg-hover);
+}
+
+.message-list-row--unread[aria-selected="false"]:hover,
+.message-list-row--unread[aria-selected="false"]:focus,
+.thread-list-row--unread[aria-selected="false"]:hover,
+.thread-list-row--unread[aria-selected="false"]:focus {
+  background: var(--color-bg-hover);
+}
+
+.app-shell--with-background .message-list-row[aria-selected="true"],
+.app-shell--with-background .thread-list-row[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-sidebar-active) 60%, transparent);
 }
 
 /* Staggered fade-in for list items */
@@ -218,42 +336,404 @@ textarea:focus-visible {
 
 /* Tiptap editor uses the global :focus-visible ring. */
 
+/* Compose */
+
+.compose-form-shell {
+  width: 100%;
+  max-width: 920px;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  margin: 0 auto;
+}
+
+.compose-editor-toolbar-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 96%, var(--color-bg-secondary));
+}
+
+.compose-toolbar-tools {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.compose-toolbar-actions,
+.compose-format-toolbar,
+.compose-format-toolbar-slot,
+.compose-mode-tabs {
+  display: flex;
+  align-items: center;
+}
+
+.compose-toolbar-actions,
+.compose-format-toolbar {
+  gap: 2px;
+}
+
+.compose-format-toolbar {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.compose-format-toolbar-slot {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.compose-toolbar-divider {
+  width: 1px;
+  height: 22px;
+  flex: 0 0 auto;
+  background: var(--color-border);
+}
+
+.compose-format-button,
+.compose-toolbar-icon-button,
+.compose-toolbar-text-button,
+.compose-mode-button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.compose-format-button,
+.compose-toolbar-icon-button {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.compose-toolbar-text-button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.compose-format-button:hover,
+.compose-toolbar-icon-button:hover,
+.compose-toolbar-text-button:hover,
+.compose-mode-button:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.compose-format-button.is-active,
+.compose-toolbar-icon-button.is-active,
+.compose-toolbar-text-button.is-active,
+.compose-mode-button.is-active {
+  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+
+.compose-mode-tabs {
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.compose-mode-button {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.compose-inline-panel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.compose-editor-area {
+  position: relative;
+  min-height: 340px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 20px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--color-bg) 98%, var(--color-bg-secondary));
+}
+
+.compose-editor-surface {
+  min-height: 320px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-radius: 8px;
+  background: var(--color-bg);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.compose-editor-surface:focus-within {
+  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 13%, transparent);
+}
+
+.compose-editor-content,
+.compose-source-input,
+.compose-preview-split {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  box-sizing: border-box;
+}
+
+.compose-editor-content {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 22px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.compose-editor-content .ProseMirror {
+  flex: 1 1 auto;
+  min-height: 284px;
+  outline: 0;
+}
+
+.compose-editor-content .ProseMirror:focus,
+.compose-editor-content .ProseMirror:focus-visible {
+  outline: 0;
+}
+
+.compose-editor-content .ProseMirror > :first-child {
+  margin-top: 0;
+}
+
+.compose-source-input {
+  flex: 1 1 auto;
+  display: block;
+  padding: 18px 22px;
+  border: 0;
+  resize: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.compose-source-input:focus,
+.compose-source-input:focus-visible {
+  outline: 0;
+}
+
+.compose-source-input.is-code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.compose-preview-split {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.compose-source-input--split {
+  border-right: 1px solid var(--color-border);
+}
+
+.compose-html-preview {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border: 0;
+  background: #fff;
+}
+
+.compose-drop-overlay {
+  position: absolute;
+  inset: 16px 20px 20px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px dashed var(--color-accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+  color: var(--color-accent);
+  font-size: 14px;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+.compose-quoted-reply {
+  flex: 0 0 auto;
+  margin-top: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg) 94%, var(--color-bg-secondary));
+  overflow: hidden;
+}
+
+.compose-quoted-reply-toggle {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.compose-quoted-reply-toggle:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.compose-quoted-reply-toggle svg {
+  flex: 0 0 auto;
+}
+
+.compose-quoted-reply-content {
+  max-height: 240px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+  user-select: text;
+}
+
+.compose-quoted-reply-content blockquote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid color-mix(in srgb, var(--color-text-secondary) 24%, transparent);
+}
+
+.compose-quoted-reply-content p {
+  margin: 0 0 10px;
+}
+
+.compose-quoted-reply-content p:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 720px) {
+  .compose-editor-toolbar-row,
+  .compose-toolbar-tools {
+    flex-wrap: wrap;
+  }
+
+  .compose-toolbar-tools,
+  .compose-mode-tabs {
+    flex-basis: 100%;
+  }
+
+  .compose-mode-tabs {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .compose-mode-button {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  .compose-editor-area {
+    padding: 12px;
+  }
+
+  .compose-drop-overlay {
+    inset: 12px;
+  }
+}
+
 /* ─── Search Controls ───────────────────────────────────── */
 
 .search-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: 10px;
+  padding: 12px 18px;
   border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 96%, var(--color-bg-secondary));
+  background: color-mix(in srgb, var(--color-bg) 94%, var(--color-bg-secondary));
 }
 
 .search-input-shell {
   flex: 1;
   min-width: 0;
-  height: 34px;
+  height: 42px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+  gap: 10px;
+  padding: 0 14px;
   border: 1px solid var(--color-border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--color-bg);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
   transition: border-color 0.14s ease, box-shadow 0.14s ease, background-color 0.14s ease;
 }
 
 .search-input-shell:focus-within {
   border-color: color-mix(in srgb, var(--color-accent) 46%, var(--color-border));
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent),
-    0 1px 0 rgba(0, 0, 0, 0.02);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 
 .search-input-shell svg {
   flex-shrink: 0;
-  color: var(--color-text-secondary);
+  color: color-mix(in srgb, var(--color-text-secondary) 86%, var(--color-text-primary));
+}
+
+.app-shell--with-background .search-toolbar {
+  border-bottom-color: color-mix(in srgb, var(--color-border) 60%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 12%, transparent);
+}
+
+.app-shell--with-background .search-input-shell {
+  border-color: color-mix(in srgb, var(--color-border) 50%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 18%, transparent);
 }
 
 .search-input {
@@ -284,6 +764,12 @@ textarea:focus-visible {
   background: color-mix(in srgb, var(--color-bg) 96%, var(--color-bg-secondary));
 }
 
+.app-shell--with-background .inbox-toolbar-row {
+  border-bottom-color: color-mix(in srgb, var(--color-border) 60%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 12%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-border) 50%, transparent);
+}
+
 .inbox-toolbar-search {
   flex: 1 1 auto;
   min-width: 0;
@@ -292,6 +778,11 @@ textarea:focus-visible {
 .inbox-toolbar-search .search-toolbar {
   border-bottom: 0;
   background: transparent;
+}
+
+.app-shell--with-background .inbox-toolbar-search .search-toolbar {
+  background: transparent;
+  backdrop-filter: none;
 }
 
 .inbox-toolbar-button {
@@ -564,5 +1055,912 @@ textarea:focus-visible {
 
   .search-filter-toggle {
     width: 100%;
+  }
+}
+
+/* Contacts */
+.contacts-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: color-mix(in srgb, var(--color-main-bg) 96%, var(--color-sidebar-bg));
+}
+
+.contacts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 28px 16px;
+}
+
+.contacts-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.contacts-eyebrow,
+.contact-dialog-kicker {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.contacts-title-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.contacts-title-row h1,
+.contact-dialog-header h2,
+.contact-detail h2,
+.contacts-empty-state h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.contacts-title-row h1 {
+  font-size: 25px;
+  line-height: 1.15;
+}
+
+.contacts-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.contacts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 28px 16px;
+}
+
+.contacts-import-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 28px 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-bg));
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+
+.contacts-import-summary strong {
+  font-size: 12px;
+}
+
+.contacts-import-summary p {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.contacts-import-summary ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--color-danger);
+}
+
+.contacts-search-shell {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 520px;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.contacts-search-shell:focus-within {
+  border-color: color-mix(in srgb, var(--color-accent) 52%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.contacts-search-shell input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 0 0 8px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.contacts-search-shell input::placeholder {
+  color: var(--color-text-secondary);
+}
+
+.contacts-favorite-filter {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  gap: 7px;
+  box-sizing: border-box;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.contacts-favorite-filter input,
+.contact-favorite-control input,
+.contact-primary-control input {
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.contacts-shell {
+  display: grid;
+  grid-template-columns: minmax(270px, 340px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  margin: 0 28px 24px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg);
+  box-shadow: 0 10px 32px rgba(26, 26, 26, 0.04);
+}
+
+.contacts-list-pane {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-sidebar-bg) 58%, var(--color-bg));
+}
+
+.contact-list {
+  padding: 0;
+}
+
+.contact-list-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.contact-list-item:hover {
+  background: var(--color-bg-hover);
+}
+
+.contact-list-item--selected {
+  border-color: color-mix(in srgb, var(--color-accent) 25%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-bg));
+}
+
+.contact-avatar,
+.contact-detail-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-accent) 11%, var(--color-bg));
+  color: var(--color-accent);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.contact-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 11px;
+}
+
+.contact-list-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.contact-list-name,
+.contact-list-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-list-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.contact-list-email {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.contact-list-star {
+  color: var(--color-accent);
+}
+
+.contacts-detail-pane {
+  min-width: 0;
+  overflow: auto;
+}
+
+.contacts-state,
+.contacts-empty-state,
+.contacts-selection-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 36px 24px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+
+.contacts-state--error,
+.contacts-empty-state,
+.contacts-selection-state {
+  flex-direction: column;
+  gap: 10px;
+}
+
+.contacts-state--error p,
+.contacts-empty-state p,
+.contacts-selection-state p {
+  max-width: 290px;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.contacts-empty-state h2 {
+  font-size: 16px;
+}
+
+.contacts-empty-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: var(--color-bg-secondary);
+  color: var(--color-accent);
+}
+
+.contact-detail {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 34px 40px 46px;
+}
+
+.contact-detail-heading {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.contact-detail-avatar {
+  width: 48px;
+  height: 48px;
+  font-size: 15px;
+}
+
+.contact-detail-name-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.contact-detail-name-row svg {
+  color: var(--color-accent);
+}
+
+.contact-detail h2 {
+  font-size: 21px;
+}
+
+.contact-detail-heading p {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.contact-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 24px 0 30px;
+}
+
+.contact-detail-section {
+  padding: 20px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.contact-detail-section h3 {
+  margin: 0 0 12px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.contact-address-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.contact-address-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+}
+
+.contact-address-row:last-child {
+  border-bottom: 0;
+}
+
+.contact-address-value,
+.contact-address-meta {
+  display: block;
+}
+
+.contact-address-value {
+  font-size: 13px;
+}
+
+.contact-address-meta {
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.contact-notes {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.contact-detail-danger-zone {
+  padding-top: 26px;
+  border-top: 1px solid var(--color-border);
+}
+
+.contact-primary-button,
+.contact-secondary-button,
+.contact-danger-button,
+.contact-text-button,
+.contact-inline-danger,
+.contact-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease, opacity 0.14s ease;
+}
+
+.contact-address-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.contact-address-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 7%, var(--color-bg));
+  color: var(--color-accent);
+}
+
+.contact-address-action:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.message-participants {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 3px 0;
+}
+
+.message-participants-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* Caps the expanded recipient list so large bulk lists scroll in place
+   instead of stretching the message pane past the viewport. The collapse
+   toggle lives outside this container so it always stays reachable. */
+.message-participants-groups--scroll {
+  max-height: 160px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
+}
+
+.message-participants-groups--scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.message-participants-groups--scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background-color: var(--color-scrollbar-thumb);
+}
+
+.message-participants-groups--scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-scrollbar-thumb-hover);
+}
+
+.participant-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.participant-label {
+  flex-shrink: 0;
+}
+
+.participant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 280px;
+  padding: 1px 3px 1px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg);
+}
+
+.participant-chip .participant-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.participant-chip .contact-address-action {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+}
+
+.participant-chip .contact-address-action:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--color-bg-hover);
+  color: var(--color-accent);
+}
+
+.participant-toggle {
+  padding: 0 2px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.participant-toggle:hover {
+  text-decoration: underline;
+}
+
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attachment-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.attachment-card:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+  background: var(--color-bg-hover);
+}
+
+.attachment-icon-tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.attachment-name {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-meta {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.attachment-download {
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.attachment-download:hover:not(:disabled) {
+  background: var(--color-bg);
+  color: var(--color-accent);
+}
+
+.attachment-download:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.contact-primary-button,
+.contact-secondary-button,
+.contact-danger-button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.contact-primary-button {
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.contact-primary-button:hover {
+  filter: brightness(0.96);
+}
+
+.contact-secondary-button {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+}
+
+.contact-secondary-button:hover,
+.contact-icon-button:hover {
+  background: var(--color-bg-hover);
+}
+
+.contact-danger-button {
+  border: 1px solid color-mix(in srgb, var(--color-danger) 30%, var(--color-border));
+  background: transparent;
+  color: var(--color-danger);
+}
+
+.contact-danger-button:hover {
+  background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+}
+
+.contact-text-button {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+}
+
+.contact-inline-danger {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-danger);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.contact-icon-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.contact-primary-button:disabled,
+.contact-secondary-button:disabled,
+.contact-icon-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.contacts-mobile-back {
+  display: none;
+  margin-bottom: 20px;
+}
+
+.contact-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(18, 18, 18, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.contact-dialog {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24);
+}
+
+.contact-dialog-header,
+.contact-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px 20px;
+}
+
+.contact-dialog-header {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.contact-dialog-header h2 {
+  font-size: 18px;
+}
+
+.contact-dialog form {
+  display: flex;
+  max-height: calc(min(760px, 100vh - 48px) - 73px);
+  flex-direction: column;
+}
+
+.contact-dialog-body {
+  overflow: auto;
+  padding: 20px;
+}
+
+.contact-dialog-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-sidebar-bg) 55%, var(--color-bg));
+}
+
+.contact-email-fieldset {
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+.contact-email-fieldset > legend {
+  margin-bottom: 7px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.contact-email-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-bottom: 7px;
+}
+
+.contact-email-row {
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-sidebar-bg) 45%, var(--color-bg));
+}
+
+.contact-email-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 126px;
+  gap: 10px;
+}
+
+.contact-email-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 9px;
+}
+
+.contact-primary-control,
+.contact-favorite-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.contact-character-count {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  text-align: right;
+}
+
+.contact-form-error {
+  margin: 14px 0 0;
+  padding: 9px 10px;
+  border-left: 3px solid var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 7%, transparent);
+  color: var(--color-danger);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .contacts-header {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 18px 18px 14px;
+  }
+
+  .contacts-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .contacts-toolbar {
+    flex-wrap: wrap;
+    padding: 0 18px 14px;
+  }
+
+  .contacts-import-summary {
+    margin: 0 18px 14px;
+  }
+
+  .contacts-search-shell {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .contacts-shell {
+    grid-template-columns: minmax(0, 1fr);
+    margin: 0 18px 18px;
+  }
+
+  .contacts-list-pane {
+    border-right: 0;
+  }
+
+  .contacts-shell[data-has-selection="true"] .contacts-list-pane,
+  .contacts-shell[data-has-selection="false"] .contacts-detail-pane {
+    display: none;
+  }
+
+  .contacts-mobile-back {
+    display: inline-flex;
+  }
+
+  .contact-detail {
+    padding: 24px 22px 38px;
+  }
+
+  .contact-dialog-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .contact-dialog {
+    max-height: calc(100vh - 22px);
+    border-radius: 10px 10px 0 0;
+  }
+
+  .contact-dialog form {
+    max-height: calc(100vh - 95px);
+  }
+}
+
+@media (max-width: 520px) {
+  .contacts-favorite-filter {
+    width: 100%;
+  }
+
+  .contact-email-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .contact-detail-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

@@ -1,8 +1,8 @@
 import type { Folder } from "@/lib/api";
 
-export const ALL_ACCOUNTS_SELECT_VALUE = "__all_accounts__";
 export const ALL_ACCOUNTS_ID = "all";
 export const ALL_ACCOUNTS_FOLDER_PREFIX = "all:";
+export const ALL_ACCOUNTS_SELECT_VALUE = "__all_accounts__";
 
 export type FolderRole = NonNullable<Folder["role"]>;
 
@@ -53,6 +53,31 @@ export function buildAllAccountsFolders(folders: Folder[]): Folder[] {
     .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
 
   return [...virtualFolders, ...customFolders];
+}
+
+export function sortFoldersForSidebar(folders: Folder[]): Folder[] {
+  const firstFolderByRole = new Map<FolderRole, Folder>();
+  const customFolders: Folder[] = [];
+
+  for (const folder of folders) {
+    if (!folder.role) {
+      customFolders.push(folder);
+      continue;
+    }
+    if (!firstFolderByRole.has(folder.role)) {
+      firstFolderByRole.set(folder.role, folder);
+    }
+  }
+
+  const systemFolders = SYSTEM_ROLE_ORDER.flatMap((role) => {
+    const folder = firstFolderByRole.get(role);
+    return folder ? [folder] : [];
+  });
+
+  return [
+    ...systemFolders,
+    ...customFolders.sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)),
+  ];
 }
 
 export function folderIdsForSelection(folderId: string | null, folders: Folder[]): string[] {

@@ -3,20 +3,76 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
+    /// A local label, never used in outbound mail headers.
+    #[serde(default)]
+    pub account_label: Option<String>,
+    /// Last verified provider-managed name (Outlook).
+    #[serde(default)]
+    pub provider_display_name: Option<String>,
     pub id: String,
     pub email: String,
     pub display_name: String,
+    pub color: Option<String>,
     pub provider: ProviderType,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+impl Account {
+    /// Local account labels must never participate in the outgoing identity.
+    pub fn sender_identity(&self) -> EmailAddress {
+        let name = if self.provider == ProviderType::Outlook {
+            self.provider_display_name.as_deref()
+        } else {
+            Some(self.display_name.as_str())
+        };
+        EmailAddress {
+            name: name
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
+            address: self.email.trim().to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OAuthMailboxIdentity {
+    pub subject: String,
+    pub email: String,
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
     Imap,
+    Pop3,
     Gmail,
     Outlook,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpProxyConfig {
+    pub host: String,
+    pub port: u16,
+}
+
+impl HttpProxyConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.host.trim().is_empty() {
+            return Err("Proxy host is required".to_string());
+        }
+        if self.port == 0 {
+            return Err("Proxy port must be between 1 and 65535".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn socks5h_uri(&self) -> Result<String, String> {
+        self.validate()?;
+        Ok(format!("socks5h://{}:{}", self.host.trim(), self.port))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +305,76 @@ pub struct KnownContact {
     pub address: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ContactEmailLabel {
+    Work,
+    Personal,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactEmail {
+    pub id: String,
+    pub address: String,
+    pub label: ContactEmailLabel,
+    pub is_primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Contact {
+    pub id: String,
+    pub display_name: String,
+    pub notes: String,
+    pub is_favorite: bool,
+    pub emails: Vec<ContactEmail>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactEmailInput {
+    pub id: Option<String>,
+    pub address: String,
+    pub label: ContactEmailLabel,
+    pub is_primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactInput {
+    pub id: Option<String>,
+    pub display_name: String,
+    pub notes: String,
+    pub is_favorite: bool,
+    pub emails: Vec<ContactEmailInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ContactSuggestionSource {
+    Saved,
+    Recent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactSuggestion {
+    pub contact_id: Option<String>,
+    pub name: Option<String>,
+    pub address: String,
+    pub source: ContactSuggestionSource,
+    pub is_favorite: bool,
+    pub last_interaction_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct VcardImportResult {
+    pub created: usize,
+    pub merged: usize,
+    pub skipped: usize,
+    pub invalid: usize,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Category {
     pub id: String,
@@ -258,6 +384,8 @@ pub struct Category {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftMessage {
+    #[serde(default)]
+    pub from: Option<EmailAddress>,
     pub id: Option<String>,
     pub to: Vec<EmailAddress>,
     pub cc: Vec<EmailAddress>,

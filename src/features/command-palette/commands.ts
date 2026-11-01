@@ -26,6 +26,12 @@ export function buildCommands(t: (key: string, defaultValue: string) => string):
       execute: () => useUIStore.getState().setActiveView("kanban"),
     },
     {
+      id: "nav:contacts",
+      name: t("commands.goToContacts", "Go to Contacts"),
+      category: t("commands.navigation", "Navigation"),
+      execute: () => useUIStore.getState().setActiveView("contacts"),
+    },
+    {
       id: "nav:settings",
       name: t("commands.goToSettings", "Go to Settings"),
       category: t("commands.navigation", "Navigation"),
@@ -55,6 +61,8 @@ export function buildCommands(t: (key: string, defaultValue: string) => string):
         if (id) {
           await updateMessageFlags(id, true);
           queryClient.invalidateQueries({ queryKey: ["messages"] });
+          queryClient.invalidateQueries({ queryKey: ["threads"] });
+          queryClient.invalidateQueries({ queryKey: ["folder-unread-counts"] });
         }
       },
     },
@@ -67,6 +75,8 @@ export function buildCommands(t: (key: string, defaultValue: string) => string):
         if (id) {
           await updateMessageFlags(id, false);
           queryClient.invalidateQueries({ queryKey: ["messages"] });
+          queryClient.invalidateQueries({ queryKey: ["threads"] });
+          queryClient.invalidateQueries({ queryKey: ["folder-unread-counts"] });
         }
       },
     },
@@ -106,6 +116,8 @@ export function buildCommands(t: (key: string, defaultValue: string) => string):
           const result = await archiveMessage(id);
           if (result === "skipped") return;
           queryClient.invalidateQueries({ queryKey: ["messages"] });
+          queryClient.invalidateQueries({ queryKey: ["threads"] });
+          queryClient.invalidateQueries({ queryKey: ["folder-unread-counts"] });
           const msg = result === "unarchived" ? t("messageActions.unarchiveSuccess", "Message moved to inbox") : t("messageActions.archiveSuccess", "Message archived");
           useToastStore.getState().addToast({ message: msg, type: "success" });
         } catch {
